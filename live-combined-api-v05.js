@@ -3,129 +3,21 @@ const { URL } = require("url");
 const { searchNieruchomosciOnline } = require("./live-parser");
 const { searchMorizon } = require("./live-morizon");
 const { searchDomiporta } = require("./parser-domiporta-v05");
+const { resolveLocation } = require("./location-resolver");
 
 const PORT = process.env.PORT || 10000;
 const GRATKA_API = "https://analizator-cen-ofertowych-v05-gratka.onrender.com/api/gratka";
 const ADRESOWO_API = "https://analizator-cen-ofertowych-v05-adresowo.onrender.com/api/adresowo";
 
 function send(res,status,data){
-  res.writeHead(status,{
-    "Content-Type":"application/json; charset=utf-8",
-    "Access-Control-Allow-Origin":"*",
-    "Access-Control-Allow-Methods":"GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers":"Content-Type"
-  });
+  res.writeHead(status,{"Content-Type":"application/json; charset=utf-8","Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,POST,OPTIONS","Access-Control-Allow-Headers":"Content-Type"});
   res.end(JSON.stringify(data));
 }
-
-function normalizeUrl(value){
-  try{
-    const u=new URL(value);
-    u.hash="";
-    u.search="";
-    return u.href.replace(/\/$/,"").toLowerCase();
-  }catch{
-    return String(value||"").trim().toLowerCase();
-  }
-}
-
-// STAŁA ZASADA: ten sam URL LUB ta sama cena + ta sama powierzchnia = duplikat.
-function dedupeOffers(offers){
-  const seenUrl=new Set(),seenData=new Set(),duplicates=[],result=[];
-  for(const offer of offers){
-    const urlKey=normalizeUrl(offer.url);
-    const price=Number(offer.price);
-    const area=Number(offer.area);
-    const dataKey=Number.isFinite(price)&&Number.isFinite(area)?`${price}|${area}`:"";
-    let reason="";
-    if(urlKey&&seenUrl.has(urlKey)) reason="ten sam URL";
-    else if(dataKey&&seenData.has(dataKey)) reason="ta sama cena + ta sama powierzchnia";
-    if(reason){
-      const kept=result.find(x=>(urlKey&&normalizeUrl(x.url)===urlKey)||(dataKey&&`${Number(x.price)}|${Number(x.area)}`===dataKey));
-      duplicates.push({reason,kept:kept||result[0],duplicate:offer});
-      continue;
-    }
-    if(urlKey) seenUrl.add(urlKey);
-    if(dataKey) seenData.add(dataKey);
-    result.push(offer);
-  }
-  return {rows:result,duplicates};
-}
-
-async function remoteJson(url,label){
-  const response=await fetch(url);
-  if(!response.ok) throw new Error(`${label} API HTTP ${response.status}`);
-  return response.json();
-}
-
-async function searchGratkaRemote({areaTarget=62,tolerance=10}={}){
-  const url=`${GRATKA_API}?area=${encodeURIComponent(areaTarget)}&tolerance=${encodeURIComponent(tolerance)}`;
-  const data=await remoteJson(url,"Gratka");
-  return {
-    portal:"Gratka",httpStatus:data.httpStatus,fetched:data.fetched,htmlLength:data.htmlLength,
-    recognized:data.recognized,complete:data.complete,filtered:data.filtered,
-    offers:Array.isArray(data.offers)?data.offers:[]
-  };
-}
-
-async function searchAdresowoRemote({areaTarget=62,tolerance=10}={}){
-  const url=`${ADRESOWO_API}?area=${encodeURIComponent(areaTarget)}&tolerance=${encodeURIComponent(tolerance)}`;
-  const data=await remoteJson(url,"Adresowo");
-  return {
-    portal:"Adresowo",httpStatus:data.httpStatus,fetched:data.fetched,htmlLength:data.htmlLength,
-    recognized:data.recognized,complete:data.complete,filtered:data.filtered,
-    offers:Array.isArray(data.offers)?data.offers:[]
-  };
-}
-
-async function run(){
-  const location="Olsztyn",area=62,tolerance=10,minArea=55.8,maxArea=68.2,EPS=1e-9;
-
-  const [no,morizon,domiporta,gratka,adresowo]=await Promise.all([
-    searchNieruchomosciOnline({location}),
-    searchMorizon(),
-    searchDomiporta({areaTarget:area,tolerance}),
-    searchGratkaRemote({areaTarget:area,tolerance}),
-    searchAdresowoRemote({areaTarget:area,tolerance})
-  ]);
-
-  const lives=[no,morizon,domiporta,gratka,adresowo];
-  const sources=lives.map(live=>{
-    const complete=live.offers.filter(o=>o.locality&&Number.isFinite(o.price)&&Number.isFinite(o.area)&&o.url);
-    const filtered=complete.filter(o=>o.area>=minArea-EPS&&o.area<=maxArea+EPS);
-    return {
-      portal:live.portal,httpStatus:live.httpStatus,fetched:live.fetched,htmlLength:live.htmlLength,
-      recognized:live.recognized,complete:complete.length,filtered:filtered.length,offers:filtered
-    };
-  });
-
-  const before=sources.flatMap(s=>s.offers);
-  const cross=dedupeOffers(before);
-
-  return {
-    version:"0.5.0-5portale",location,area,tolerance,minArea,maxArea,
-    sources:sources.map(s=>({
-      portal:s.portal,httpStatus:s.httpStatus,fetched:s.fetched,htmlLength:s.htmlLength,
-      recognized:s.recognized,complete:s.complete,filtered:s.filtered,
-      uniqueAfterCrossPortal:cross.rows.filter(o=>o.source===s.portal).length
-    })),
-    beforeCrossDedup:before.length,unique:cross.rows.length,duplicatesRemoved:cross.duplicates.length,
-    duplicates:cross.duplicates,offers:cross.rows
-  };
-}
-
-const server=http.createServer(async(req,res)=>{
-  if(req.method==="OPTIONS") return send(res,204,{});
-  const url=new URL(req.url,`http://${req.headers.host||"localhost"}`);
-  if(req.method==="GET"&&url.pathname==="/health") return send(res,200,{ok:true,service:"5-portale-live-v05"});
-  if(req.method==="POST"&&url.pathname==="/api/live/combined"){
-    try{return send(res,200,await run());}
-    catch(e){return send(res,500,{error:e.message||"Błąd serwera"});}
-  }
-  return send(res,404,{error:"Nie znaleziono endpointu."});
-});
-
-server.listen(PORT,"0.0.0.0",()=>{
-  console.log(`5-portale live v0.5 listening on port ${PORT}`);
-  run().then(r=>console.log("FIVE_PORTAL_SELFTEST "+JSON.stringify({beforeCrossDedup:r.beforeCrossDedup,unique:r.unique,duplicatesRemoved:r.duplicatesRemoved,sources:r.sources}))).catch(e=>console.error("FIVE_PORTAL_SELFTEST_ERROR "+e.message));
-});
+function normalizeUrl(value){try{const u=new URL(value);u.hash="";u.search="";return u.href.replace(/\/$/,"").toLowerCase();}catch{return String(value||"").trim().toLowerCase();}}
+function dedupeOffers(offers){const seenUrl=new Set(),seenData=new Set(),duplicates=[],result=[];for(const offer of offers){const urlKey=normalizeUrl(offer.url),price=Number(offer.price),area=Number(offer.area),dataKey=Number.isFinite(price)&&Number.isFinite(area)?`${price}|${area}`:"";let reason="";if(urlKey&&seenUrl.has(urlKey))reason="ten sam URL";else if(dataKey&&seenData.has(dataKey))reason="ta sama cena + ta sama powierzchnia";if(reason){const kept=result.find(x=>(urlKey&&normalizeUrl(x.url)===urlKey)||(dataKey&&`${Number(x.price)}|${Number(x.area)}`===dataKey));duplicates.push({reason,kept:kept||result[0],duplicate:offer});continue;}if(urlKey)seenUrl.add(urlKey);if(dataKey)seenData.add(dataKey);result.push(offer);}return{rows:result,duplicates};}
+async function remoteJson(url,label){const response=await fetch(url);if(!response.ok)throw new Error(`${label} API HTTP ${response.status}`);return response.json();}
+async function searchGratkaRemote({areaTarget=62,tolerance=10}={}){const url=`${GRATKA_API}?area=${encodeURIComponent(areaTarget)}&tolerance=${encodeURIComponent(tolerance)}`;const data=await remoteJson(url,"Gratka");return{portal:"Gratka",httpStatus:data.httpStatus,fetched:data.fetched,htmlLength:data.htmlLength,recognized:data.recognized,complete:data.complete,filtered:data.filtered,offers:Array.isArray(data.offers)?data.offers:[]};}
+async function searchAdresowoRemote({areaTarget=62,tolerance=10}={}){const url=`${ADRESOWO_API}?area=${encodeURIComponent(areaTarget)}&tolerance=${encodeURIComponent(tolerance)}`;const data=await remoteJson(url,"Adresowo");return{portal:"Adresowo",httpStatus:data.httpStatus,fetched:data.fetched,htmlLength:data.htmlLength,recognized:data.recognized,complete:data.complete,filtered:data.filtered,offers:Array.isArray(data.offers)?data.offers:[]};}
+async function run(){const location="Olsztyn",area=62,tolerance=10,minArea=55.8,maxArea=68.2,EPS=1e-9;const[no,morizon,domiporta,gratka,adresowo]=await Promise.all([searchNieruchomosciOnline({location}),searchMorizon(),searchDomiporta({areaTarget:area,tolerance}),searchGratkaRemote({areaTarget:area,tolerance}),searchAdresowoRemote({areaTarget:area,tolerance})]);const lives=[no,morizon,domiporta,gratka,adresowo];const sources=lives.map(live=>{const complete=live.offers.filter(o=>o.locality&&Number.isFinite(o.price)&&Number.isFinite(o.area)&&o.url);const filtered=complete.filter(o=>o.area>=minArea-EPS&&o.area<=maxArea+EPS);return{portal:live.portal,httpStatus:live.httpStatus,fetched:live.fetched,htmlLength:live.htmlLength,recognized:live.recognized,complete:complete.length,filtered:filtered.length,offers:filtered};});const before=sources.flatMap(s=>s.offers),cross=dedupeOffers(before);return{version:"0.5.0-5portale",location,area,tolerance,minArea,maxArea,sources:sources.map(s=>({portal:s.portal,httpStatus:s.httpStatus,fetched:s.fetched,htmlLength:s.htmlLength,recognized:s.recognized,complete:s.complete,filtered:s.filtered,uniqueAfterCrossPortal:cross.rows.filter(o=>o.source===s.portal).length})),beforeCrossDedup:before.length,unique:cross.rows.length,duplicatesRemoved:cross.duplicates.length,duplicates:cross.duplicates,offers:cross.rows};}
+const server=http.createServer(async(req,res)=>{if(req.method==="OPTIONS")return send(res,204,{});const url=new URL(req.url,`http://${req.headers.host||"localhost"}`);if(req.method==="GET"&&url.pathname==="/health")return send(res,200,{ok:true,service:"5-portale-live-v05"});if(req.method==="GET"&&url.pathname==="/api/resolve-location"){try{const location=url.searchParams.get("location")||"";return send(res,200,await resolveLocation(location));}catch(e){return send(res,400,{error:e.message||"Nie udało się rozpoznać lokalizacji."});}}if(req.method==="POST"&&url.pathname==="/api/live/combined"){try{return send(res,200,await run());}catch(e){return send(res,500,{error:e.message||"Błąd serwera"});}}return send(res,404,{error:"Nie znaleziono endpointu."});});
+server.listen(PORT,"0.0.0.0",()=>{console.log(`5-portale live v0.5 listening on port ${PORT}`);run().then(r=>console.log("FIVE_PORTAL_SELFTEST "+JSON.stringify({beforeCrossDedup:r.beforeCrossDedup,unique:r.unique,duplicatesRemoved:r.duplicatesRemoved,sources:r.sources}))).catch(e=>console.error("FIVE_PORTAL_SELFTEST_ERROR "+e.message));});
