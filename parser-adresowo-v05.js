@@ -43,57 +43,60 @@ function stripHtml(value) {
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
     .replace(/&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function parseCards(html) {
   const rows = [];
-  const re = /href=["'](\/o\/[^"'#?]+(?:\?[^"']*)?)["']/gi;
+  const seenUrls = new Set();
+
+  // Adresowo may emit relative URLs, absolute URLs, data-href/data-url attributes,
+  // or escaped URLs. Do not assume that the listing link is specifically href="/o/...".
+  const re = /(?:href|data-href|data-url)=["']([^"']*\/o\/[^"'#?]*(?:\?[^"']*)?)["']/gi;
   let m;
 
   while ((m = re.exec(html))) {
-    const url = absUrl(m[1]);
-    if (!url) continue;
+    const url = absUrl(m[1].replace(/\\\//g, "/"));
+    if (!url || !/adresowo\.pl\/o\//i.test(url) || seenUrls.has(url)) continue;
+    seenUrls.add(url);
 
-    const start = Math.max(0, m.index - 5000);
-    const end = Math.min(html.length, re.lastIndex + 5000);
+    const start = Math.max(0, m.index - 3500);
+    const end = Math.min(html.length, re.lastIndex + 2500);
     const context = stripHtml(html.slice(start, end));
 
-    // Adresowo listing cards expose price and area as ordinary text.
-    // Use the first plausible price followed by a plausible area in the same card context.
-    const priceMatches = [...context.matchAll(/([0-9][0-9 .\u00a0]{3,})\s*(?:zł|PLN)\b/gi)];
+    // Prefer a price followed nearby by an area. The first match is not assumed to be the correct one.
+    const priceMatches = [...context.matchAll(/([0-9][0-9 .\u00a0]{2,})\s*(?:zł|PLN)\b/gi)];
     const areaMatches = [...context.matchAll(/([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\b/gi)];
     if (!priceMatches.length || !areaMatches.length) continue;
 
-    const price = number(priceMatches[0][1]);
-    const area = number(areaMatches[0][1]);
-    if (!price || !area || area < 15 || area > 500) continue;
-
-    // Prefer an area close to the first price; this avoids picking up unrelated text.
-    let selectedArea = area;
-    for (const am of areaMatches) {
-      const a = number(am[1]);
-      if (Number.isFinite(a) && a >= 15 && a <= 500) {
-        selectedArea = a;
-        break;
+    let best = null;
+    for (const pm of priceMatches) {
+      const price = number(pm[1]);
+      if (!price) continue;
+      for (const am of areaMatches) {
+        const area = number(am[1]);
+        if (!area || area < 10 || area > 1000) continue;
+        const distance = Math.abs(pm.index - am.index);
+        if (!best || distance < best.distance) best = { price, area, distance };
       }
     }
+    if (!best) continue;
 
-    const localityMatch = context.match(/Olsztyn(?:[ ,]+[^.]{0,100})?/i);
-    const titleMatch = context.match(/Olsztyn[^.]{0,180}?Mieszkanie na sprzedaż[^.]{0,120}/i);
+    const localityMatch = context.match(/Olsztyn(?:\s+[^,.;|]{1,80})?/i);
+    const titleMatch = context.match(/Olsztyn[^|]{0,180}?Mieszkanie na sprzedaż[^|]{0,120}/i);
 
     rows.push({
       source: "Adresowo",
       type: "mieszkanie",
       locality: localityMatch ? localityMatch[0].trim() : "Olsztyn",
       street: "",
-      title: titleMatch ? titleMatch[0].trim() : "Mieszkanie na sprzedaż Olsztyn",
-      price,
-      area: selectedArea,
-      priceM2: price / selectedArea,
+      title: titleMatch ? titleMatch[0].trim() : "",
+      price: best.price,
+      area: best.area,
+      priceM2: best.price / best.area,
       url
     });
   }
@@ -106,7 +109,6 @@ function dedupe(rows) {
   const keys = new Set();
   const unique = [];
   const duplicates = [];
-
   for (const r of rows) {
     const u = r.url;
     const k = `${r.price}|${r.area}`;
@@ -121,7 +123,6 @@ function dedupe(rows) {
 async function searchAdresowo({ areaTarget = 62, tolerance = 10 } = {}) {
   const response = await fetchHtml(TARGET_URL);
   const parsed = parseCards(response.html);
-
   const seen = new Set();
   const recognizedRows = parsed.filter(o => {
     const key = `${o.url}|${o.price}|${o.area}`;
@@ -130,10 +131,7 @@ async function searchAdresowo({ areaTarget = 62, tolerance = 10 } = {}) {
     return true;
   });
 
-  const complete = recognizedRows.filter(o =>
-    o.locality && Number.isFinite(o.price) && Number.isFinite(o.area) && o.url
-  );
-
+  const complete = recognizedRows.filter(o => o.locality && Number.isFinite(o.price) && Number.isFinite(o.area) && o.url);
   const minArea = areaTarget * (1 - tolerance / 100);
   const maxArea = areaTarget * (1 + tolerance / 100);
   const filtered = complete.filter(o => o.area >= minArea && o.area <= maxArea);
