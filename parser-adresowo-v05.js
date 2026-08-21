@@ -21,10 +21,21 @@ async function fetchHtml(url) {
   } finally { clearTimeout(timer); }
 }
 
+function stripHtml(value) {
+  return String(value || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function number(value) {
   if (value == null) return null;
-  const s = String(value).replace(/\u00a0/g, " ").replace(/\s/g, "");
-  const cleaned = s.replace(/zł|PLN/gi, "").replace(/[^0-9,.-]/g, "").replace(",", ".");
+  const s = String(value).replace(/\u00a0/g, " ").trim();
+  const cleaned = s.replace(/zł|PLN/gi, "").replace(/[^0-9,.-]/g, "").replace(/,/g, ".");
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;
 }
@@ -33,86 +44,89 @@ function absUrl(value) {
   try {
     const u = new URL(String(value), TARGET_URL);
     u.hash = "";
-    u.search = "";
     return u.href.replace(/\/$/, "").toLowerCase();
   } catch (_) { return ""; }
 }
 
-function stripHtml(value) {
-  return String(value || "")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&#160;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\s+/g, " ")
-    .trim();
+function extractListingUrls(html) {
+  const urls = [];
+  const seen = new Set();
+  const re = /href\s*=\s*["']([^"']+)["']/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const raw = m[1].replace(/\\\//g, "/");
+    if (!raw.startsWith("/o/")) continue;
+    const url = absUrl(raw);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    urls.push(url);
+  }
+  return urls;
 }
 
-function parseCards(html) {
-  const rows = [];
-  const seenUrls = new Set();
-
-  // The live HTML contains ordinary relative hrefs such as href="/o/...".
-  // Extract ALL href values first, then select the /o/ targets. This avoids
-  // coupling the parser to the exact quoting/attribute layout of Adresowo.
-  const hrefRe = /href\s*=\s*["']([^"']+)["']/gi;
+function parseJsonLd(html) {
+  const out = [];
+  const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
   let m;
-
-  while ((m = hrefRe.exec(html))) {
-    const raw = String(m[1]).replace(/\\\//g, "/").trim();
-    if (!/^\/o\//i.test(raw) && !/^https?:\/\/adresowo\.pl\/o\//i.test(raw)) continue;
-
-    const url = absUrl(raw);
-    if (!url || !/adresowo\.pl\/o\//i.test(url) || seenUrls.has(url)) continue;
-    seenUrls.add(url);
-
-    // The listing card is adjacent to its /o/ link. Use a generous local
-    // window and pair the closest plausible price with the closest plausible area.
-    const start = Math.max(0, m.index - 4500);
-    const end = Math.min(html.length, hrefRe.lastIndex + 4500);
-    const context = stripHtml(html.slice(start, end));
-
-    const priceMatches = [...context.matchAll(/([0-9][0-9 .\u00a0]{2,})\s*(?:zł|PLN)\b/gi)];
-    const areaMatches = [...context.matchAll(/([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\b/gi)];
-
-    let best = null;
-    for (const pm of priceMatches) {
-      const price = number(pm[1]);
-      if (!price || price < 10000 || price > 10000000) continue;
-      for (const am of areaMatches) {
-        const area = number(am[1]);
-        if (!area || area < 10 || area > 1000) continue;
-        const distance = Math.abs(pm.index - am.index);
-        if (!best || distance < best.distance) best = { price, area, distance };
+  while ((m = re.exec(html))) {
+    try {
+      const data = JSON.parse(m[1].trim());
+      const arr = Array.isArray(data) ? data : [data];
+      for (const item of arr) {
+        if (!item || typeof item !== "object") continue;
+        const offers = item.offers || item.Offers;
+        const price = offers?.price ?? item.price;
+        const areaRaw = item.floorSize?.value ?? item.floorSize ?? item.area;
+        const area = number(areaRaw);
+        const p = number(price);
+        if (Number.isFinite(p) && Number.isFinite(area)) out.push({ price: p, area });
       }
+    } catch (_) {}
+  }
+  return out;
+}
+
+function parseDetail(html) {
+  const text = stripHtml(html);
+  const json = parseJsonLd(html);
+  const jsonGood = json.find(x => x.price >= 10000 && x.area >= 10 && x.area <= 1000);
+  if (jsonGood) return jsonGood;
+
+  const areaMatches = [...text.matchAll(/([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\b/gi)]
+    .map(m => ({ area: number(m[1]), index: m.index }))
+    .filter(x => x.area >= 10 && x.area <= 1000);
+  const priceMatches = [...text.matchAll(/([0-9][0-9 .\u00a0]{2,})\s*(?:zł|PLN)\b/gi)]
+    .map(m => ({ price: number(m[1]), index: m.index }))
+    .filter(x => x.price >= 10000);
+
+  let best = null;
+  for (const p of priceMatches) {
+    for (const a of areaMatches) {
+      const distance = Math.abs(p.index - a.index);
+      if (!best || distance < best.distance) best = { price: p.price, area: a.area, distance };
     }
+  }
+  return best ? { price: best.price, area: best.area } : null;
+}
 
-    if (!best) continue;
-
-    const title = raw
-      .replace(/^\/o\//i, "")
-      .replace(/^https?:\/\/adresowo\.pl\/o\//i, "")
-      .replace(/-[a-z0-9]{6}$/i, "")
-      .replace(/-/g, " ");
-
-    rows.push({
+async function parseListing(url) {
+  try {
+    const response = await fetchHtml(url);
+    if (!response.ok) return null;
+    const data = parseDetail(response.html);
+    if (!data) return null;
+    return {
       source: "Adresowo",
       type: "mieszkanie",
       locality: "Olsztyn",
       street: "",
-      title,
-      price: best.price,
-      area: best.area,
-      priceM2: best.price / best.area,
+      title: "",
+      price: data.price,
+      area: data.area,
+      priceM2: data.price / data.area,
       url
-    });
-  }
-
-  return rows;
+    };
+  } catch (_) { return null; }
 }
 
 function dedupe(rows) {
@@ -132,30 +146,23 @@ function dedupe(rows) {
 }
 
 async function searchAdresowo({ areaTarget = 62, tolerance = 10 } = {}) {
-  const response = await fetchHtml(TARGET_URL);
-  const parsed = parseCards(response.html);
-  const seen = new Set();
-  const recognizedRows = parsed.filter(o => {
-    const key = `${o.url}|${o.price}|${o.area}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  const complete = recognizedRows.filter(o => o.locality && Number.isFinite(o.price) && Number.isFinite(o.area) && o.url);
+  const listingResponse = await fetchHtml(TARGET_URL);
+  const urls = extractListingUrls(listingResponse.html);
+  const parsed = (await Promise.all(urls.map(parseListing))).filter(Boolean);
   const minArea = areaTarget * (1 - tolerance / 100);
   const maxArea = areaTarget * (1 + tolerance / 100);
-  const filtered = complete.filter(o => o.area >= minArea && o.area <= maxArea);
+  const filtered = parsed.filter(o => o.area >= minArea && o.area <= maxArea);
   const d = dedupe(filtered);
 
   return {
     portal: "Adresowo",
     sourceUrl: TARGET_URL,
-    httpStatus: response.status,
-    fetched: response.ok,
-    htmlLength: response.html.length,
-    recognized: recognizedRows.length,
-    complete: complete.length,
+    httpStatus: listingResponse.status,
+    fetched: listingResponse.ok,
+    htmlLength: listingResponse.html.length,
+    listingUrls: urls.length,
+    recognized: parsed.length,
+    complete: parsed.length,
     filtered: filtered.length,
     unique: d.unique.length,
     duplicates: d.duplicates.length,
@@ -178,7 +185,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify(result));
     }
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ service: "Adresowo parser v0.5", status: "ok", endpoints: ["/health", "/api/adresowo?area=62&tolerance=10"] }));
+    res.end(JSON.stringify({ service: "Adresowo parser v0.5", status: "ok" }));
   } catch (e) {
     res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
@@ -188,6 +195,6 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`ADRESOWO_SERVER_LISTENING port=${PORT}`);
   searchAdresowo({ areaTarget: 62, tolerance: 10 })
-    .then(r => console.log("ADRESOWO_SELFTEST " + JSON.stringify({ httpStatus: r.httpStatus, fetched: r.fetched, htmlLength: r.htmlLength, recognized: r.recognized, complete: r.complete, filtered: r.filtered, unique: r.unique, duplicates: r.duplicates })))
+    .then(r => console.log("ADRESOWO_SELFTEST " + JSON.stringify({ httpStatus: r.httpStatus, fetched: r.fetched, htmlLength: r.htmlLength, listingUrls: r.listingUrls, recognized: r.recognized, complete: r.complete, filtered: r.filtered, unique: r.unique, duplicates: r.duplicates, offers: r.offers })))
     .catch(e => console.error("ADRESOWO_SELFTEST_ERROR " + e.message));
 });
