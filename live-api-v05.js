@@ -44,15 +44,25 @@ function normalizeUrl(value) {
 }
 
 function dedupeOffers(offers) {
-  // Na tym etapie nie używamy ceny+powierzchni jako klucza duplikatu.
-  // Dwie różne nieruchomości mogą mieć identyczną cenę i metraż.
+  // Zasada projektu: cena + powierzchnia jest głównym, niezależnym
+  // kryterium deduplikacji. URL jest dodatkowym kryterium, nie zamiennikiem.
   const seenUrl = new Set();
+  const seenData = new Set();
   const result = [];
 
   for (const offer of offers) {
     const urlKey = normalizeUrl(offer.url);
+    const price = Number(offer.price);
+    const area = Number(offer.area);
+    const dataKey = Number.isFinite(price) && Number.isFinite(area)
+      ? `${price}|${area}`
+      : "";
+
     if (urlKey && seenUrl.has(urlKey)) continue;
+    if (dataKey && seenData.has(dataKey)) continue;
+
     if (urlKey) seenUrl.add(urlKey);
+    if (dataKey) seenData.add(dataKey);
     result.push(offer);
   }
 
@@ -134,8 +144,6 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Analizator live v0.5 listening on port ${PORT}`);
 
-  // Automatyczny test wdrożeniowy: rzeczywiste wyszukiwanie dla przykładowych
-  // parametrów używanych w aplikacji: Olsztyn, 62 m², tolerancja 10%.
   runSearch({ location: "Olsztyn", area: 62, tolerance: 10 })
     .then(r => console.log(JSON.stringify({
       liveSelfTest: true,
