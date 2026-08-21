@@ -3,6 +3,7 @@ const https = require('https');
 
 const TARGET_URL = 'https://www.domiporta.pl/mieszkanie/sprzedam/warminsko-mazurskie/olsztyn';
 const PORT = process.env.PORT || 10000;
+let lastResult = { status: 'not_tested', message: 'Test Domiporta jeszcze się nie wykonał.' };
 
 function fetchText(url) {
   return new Promise((resolve, reject) => {
@@ -122,6 +123,39 @@ async function run(){
   const target=62,tol=10,min=target*(1-tol/100),max=target*(1+tol/100);
   const r=await fetchText(TARGET_URL), diag=diagnostics(r.html);
   const parsed=parse(r.html),complete=parsed.filter(x=>x.price!=null&&x.area!=null&&x.url),filtered=complete.filter(x=>x.area>=min&&x.area<=max),d=dedup(filtered);
-  return {portal:'Domiporta',httpStatus:r.status,fetched:r.status>=200&&r.status<400,finalUrl:r.finalUrl,contentType:r.contentType,server:r.server,locationHeader:r.locationHeader,htmlLength:r.html.length,diagnostics:diag,recognized:parsed.length,complete:complete.length,filtered:filtered.length,unique:d.unique.length,duplicates:d.duplicates,offers:d.unique};
+  return {portal:'Domiporta',testedAt:new Date().toISOString(),targetArea:target,tolerance:tol,minArea:min,maxArea:max,httpStatus:r.status,fetched:r.status>=200&&r.status<400,finalUrl:r.finalUrl,contentType:r.contentType,server:r.server,locationHeader:r.locationHeader,htmlLength:r.html.length,diagnostics:diag,recognized:parsed.length,complete:complete.length,filtered:filtered.length,unique:d.unique.length,duplicates:d.duplicates,offers:d.unique};
 }
-http.createServer(async(req,res)=>{res.setHeader('Content-Type','application/json; charset=utf-8');try{if(req.url==='/health')return res.end(JSON.stringify({ok:true}));if(req.url==='/api/live/domiporta')return res.end(JSON.stringify(await run()));if(req.url==='/api/live/domiporta/diagnostics')return res.end(JSON.stringify({portal:'Domiporta',note:'Use /api/live/domiporta; it includes HTTP and HTML diagnostics.'}));res.end(JSON.stringify({ok:true,endpoint:'/api/live/domiporta'}));}catch(e){res.statusCode=500;res.end(JSON.stringify({error:e.message}));}}).listen(PORT,()=>console.log(`Domiporta live v0.5 listening on ${PORT}`));
+
+async function executeTest(reason='startup') {
+  console.log(`DOMIPORTA_TEST_START reason=${reason}`);
+  try {
+    lastResult = await run();
+    console.log(`DOMIPORTA_TEST_RESULT http=${lastResult.httpStatus} bytes=${lastResult.htmlLength} jsonld=${lastResult.diagnostics.jsonLdScripts} listitems=${lastResult.diagnostics.listItemOccurrences} offers=${lastResult.diagnostics.offerOccurrences} blocked=${lastResult.diagnostics.looksBlocked} recognized=${lastResult.recognized} complete=${lastResult.complete} filtered=${lastResult.filtered} unique=${lastResult.unique} duplicates=${lastResult.duplicates.length}`);
+  } catch (e) {
+    lastResult = { status:'error', testedAt:new Date().toISOString(), error:e.message };
+    console.error(`DOMIPORTA_TEST_ERROR ${e.stack || e.message}`);
+  }
+}
+
+const server = http.createServer((req,res)=>{
+  res.setHeader('Content-Type','application/json; charset=utf-8');
+  try {
+    if(req.url === '/health') return res.end(JSON.stringify({ok:true}));
+    if(req.url === '/api/live/domiporta') return res.end(JSON.stringify(lastResult));
+    if(req.url === '/api/live/domiporta/diagnostics') return res.end(JSON.stringify(lastResult));
+    if(req.url === '/api/live/domiporta/run') {
+      return executeTest('manual').then(()=>res.end(JSON.stringify(lastResult)));
+    }
+    // Root also exposes the latest cached test result. This makes the test usable
+    // even when a browser/proxy strips the path from a clicked URL.
+    return res.end(JSON.stringify(lastResult));
+  } catch(e) {
+    res.statusCode=500;
+    res.end(JSON.stringify({error:e.message}));
+  }
+});
+
+server.listen(PORT,()=>{
+  console.log(`Domiporta live v0.5 listening on ${PORT}`);
+  executeTest('startup');
+});
