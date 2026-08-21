@@ -74,7 +74,6 @@ async function runSearch(body) {
     throw error;
   }
 
-  // Pierwszy test live jest celowo ograniczony do Nieruchomości-online.
   if (location.toLowerCase() !== "olsztyn") {
     const error = new Error("W wersji testowej v0.5 pierwszy portal działa dla Olsztyna.");
     error.status = 400;
@@ -138,4 +137,16 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Analizator live v0.5 listening on port ${PORT}`);
+  // Tymczasowy test wdrożeniowy: sprawdzamy na Renderze, czy portal
+  // odpowiada i czy aktualny HTML zawiera rozpoznawalne oferty JSON-LD.
+  searchNieruchomosciOnline({ location: "Olsztyn" })
+    .then(r => console.log(JSON.stringify({
+      liveSelfTest: true,
+      httpStatus: r.httpStatus,
+      fetched: r.fetched,
+      htmlLength: r.htmlLength,
+      recognized: r.recognized,
+      complete: r.complete
+    })))
+    .catch(err => console.error(`liveSelfTest ERROR: ${err.message}`));
 });
