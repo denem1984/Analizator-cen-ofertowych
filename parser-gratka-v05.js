@@ -15,31 +15,28 @@ function dedupe(rows){const urls=new Set(),keys=new Set(),unique=[],duplicates=[
 async function searchGratka({areaTarget=62,tolerance=10}={}){const r=await fetchHtml(TARGET_URL),roots=jsonLd(r.html),recognized=extract(roots),complete=recognized.filter(o=>o.locality&&Number.isFinite(o.price)&&Number.isFinite(o.area)&&o.url),minArea=areaTarget*(1-tolerance/100),maxArea=areaTarget*(1+tolerance/100),filtered=complete.filter(o=>o.area>=minArea&&o.area<=maxArea),d=dedupe(filtered);return{portal:"Gratka",sourceUrl:TARGET_URL,httpStatus:r.status,fetched:r.status>=200&&r.status<400,htmlLength:r.html.length,recognized:recognized.length,complete:complete.length,filtered:filtered.length,unique:d.unique.length,duplicates:d.duplicates.length,offers:d.unique};}
 module.exports={searchGratka};
 
-// Render Web Service musi nasłuchiwać na process.env.PORT. Serwer uruchamiamy
-// wyłącznie w dedykowanym serwisie testowym, sterowanym zmienną środowiskową.
-if(process.env.GRATKA_SELFTEST_SERVER==="1"){
-  const port=Number(process.env.PORT)||10000;
-  const server=http.createServer(async(req,res)=>{
-    try{
-      const u=new URL(req.url||"/","http://localhost");
-      if(u.pathname==="/health"){
-        res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
-        return res.end(JSON.stringify({ok:true,portal:"Gratka"}));
-      }
-      if(u.pathname==="/api/gratka"){
-        const areaTarget=Number(u.searchParams.get("area")||62);
-        const tolerance=Number(u.searchParams.get("tolerance")||10);
-        const result=await searchGratka({areaTarget,tolerance});
-        res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
-        return res.end(JSON.stringify(result));
-      }
+// Ten plik jest uruchamiany bezpośrednio przez Render Web Service.
+// Serwer HTTP musi więc wystartować bez dodatkowej zmiennej środowiskowej.
+const port=Number(process.env.PORT)||10000;
+http.createServer(async(req,res)=>{
+  try{
+    const u=new URL(req.url||"/","http://localhost");
+    if(u.pathname==="/health"){
       res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
-      res.end(JSON.stringify({service:"Gratka parser v0.5",status:"ok",endpoints:["/health","/api/gratka?area=62&tolerance=10"]}));
-    }catch(e){
-      res.writeHead(500,{"Content-Type":"application/json; charset=utf-8"});
-      res.end(JSON.stringify({ok:false,error:String(e?.message||e)}));
+      return res.end(JSON.stringify({ok:true,portal:"Gratka"}));
     }
-  });
-  server.listen(port,"0.0.0.0",()=>console.log(`GRATKA_SERVER_LISTENING port=${port}`));
-}
+    if(u.pathname==="/api/gratka"){
+      const areaTarget=Number(u.searchParams.get("area")||62);
+      const tolerance=Number(u.searchParams.get("tolerance")||10);
+      const result=await searchGratka({areaTarget,tolerance});
+      res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
+      return res.end(JSON.stringify(result));
+    }
+    res.writeHead(200,{"Content-Type":"application/json; charset=utf-8"});
+    res.end(JSON.stringify({service:"Gratka parser v0.5",status:"ok",endpoints:["/health","/api/gratka?area=62&tolerance=10"]}));
+  }catch(e){
+    res.writeHead(500,{"Content-Type":"application/json; charset=utf-8"});
+    res.end(JSON.stringify({ok:false,error:String(e?.message||e)}));
+  }
+}).listen(port,"0.0.0.0",()=>console.log(`GRATKA_SERVER_LISTENING port=${port}`));
 setInterval(()=>{},2147483647);
