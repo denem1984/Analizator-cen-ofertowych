@@ -44,19 +44,15 @@ function normalizeUrl(value) {
 }
 
 function dedupeOffers(offers) {
+  // Na tym etapie nie używamy ceny+powierzchni jako klucza duplikatu.
+  // Dwie różne nieruchomości mogą mieć identyczną cenę i metraż.
   const seenUrl = new Set();
-  const seenData = new Set();
   const result = [];
 
   for (const offer of offers) {
     const urlKey = normalizeUrl(offer.url);
-    const dataKey = `${Math.round(Number(offer.price) || 0)}|${Math.round((Number(offer.area) || 0) * 100) / 100}`;
-
     if (urlKey && seenUrl.has(urlKey)) continue;
-    if (seenData.has(dataKey)) continue;
-
     if (urlKey) seenUrl.add(urlKey);
-    seenData.add(dataKey);
     result.push(offer);
   }
 
@@ -137,16 +133,26 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Analizator live v0.5 listening on port ${PORT}`);
-  // Tymczasowy test wdrożeniowy: sprawdzamy na Renderze, czy portal
-  // odpowiada i czy aktualny HTML zawiera rozpoznawalne oferty JSON-LD.
-  searchNieruchomosciOnline({ location: "Olsztyn" })
+
+  // Automatyczny test wdrożeniowy: rzeczywiste wyszukiwanie dla przykładowych
+  // parametrów używanych w aplikacji: Olsztyn, 62 m², tolerancja 10%.
+  runSearch({ location: "Olsztyn", area: 62, tolerance: 10 })
     .then(r => console.log(JSON.stringify({
       liveSelfTest: true,
       httpStatus: r.httpStatus,
       fetched: r.fetched,
-      htmlLength: r.htmlLength,
       recognized: r.recognized,
-      complete: r.complete
+      complete: r.complete,
+      filtered: r.filtered,
+      unique: r.unique,
+      sample: r.offers.slice(0, 3).map(o => ({
+        locality: o.locality,
+        street: o.street,
+        price: o.price,
+        area: o.area,
+        priceM2: o.priceM2,
+        url: o.url
+      }))
     })))
     .catch(err => console.error(`liveSelfTest ERROR: ${err.message}`));
 });
