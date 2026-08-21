@@ -53,21 +53,29 @@ function parseCards(html) {
   const rows = [];
   const seenUrls = new Set();
 
-  // Adresowo may emit relative URLs, absolute URLs, data-href/data-url attributes,
-  // or escaped URLs. Do not assume that the listing link is specifically href="/o/...".
-  const re = /(?:href|data-href|data-url)=["']([^"']*\/o\/[^"'#?]*(?:\?[^"']*)?)["']/gi;
-  let m;
+  const urlPatterns = [
+    /(?:href|data-href|data-url)=["']([^"']*\/o\/[^"'#?]*(?:\?[^"']*)?)["']/gi,
+    /https?:\\?\/\\?\/adresowo\.pl\\?\/o\\?\/[^"'\\s<>]+/gi,
+    /(?:https?:\/\/)?adresowo\.pl\/o\/[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+/gi
+  ];
 
-  while ((m = re.exec(html))) {
-    const url = absUrl(m[1].replace(/\\\//g, "/"));
+  const candidates = [];
+  for (const re of urlPatterns) {
+    let m;
+    while ((m = re.exec(html))) candidates.push({ raw: m[1] || m[0], index: m.index, end: re.lastIndex });
+  }
+
+  for (const candidate of candidates) {
+    const raw = String(candidate.raw).replace(/\\\//g, "/");
+    const url = absUrl(raw);
     if (!url || !/adresowo\.pl\/o\//i.test(url) || seenUrls.has(url)) continue;
     seenUrls.add(url);
 
-    const start = Math.max(0, m.index - 3500);
-    const end = Math.min(html.length, re.lastIndex + 2500);
-    const context = stripHtml(html.slice(start, end));
+    const start = Math.max(0, candidate.index - 5000);
+    const end = Math.min(html.length, candidate.end + 3500);
+    const contextHtml = html.slice(start, end);
+    const context = stripHtml(contextHtml);
 
-    // Prefer a price followed nearby by an area. The first match is not assumed to be the correct one.
     const priceMatches = [...context.matchAll(/([0-9][0-9 .\u00a0]{2,})\s*(?:zł|PLN)\b/gi)];
     const areaMatches = [...context.matchAll(/([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\b/gi)];
     if (!priceMatches.length || !areaMatches.length) continue;
@@ -75,7 +83,7 @@ function parseCards(html) {
     let best = null;
     for (const pm of priceMatches) {
       const price = number(pm[1]);
-      if (!price) continue;
+      if (!price || price < 10000) continue;
       for (const am of areaMatches) {
         const area = number(am[1]);
         if (!area || area < 10 || area > 1000) continue;
@@ -85,15 +93,12 @@ function parseCards(html) {
     }
     if (!best) continue;
 
-    const localityMatch = context.match(/Olsztyn(?:\s+[^,.;|]{1,80})?/i);
-    const titleMatch = context.match(/Olsztyn[^|]{0,180}?Mieszkanie na sprzedaż[^|]{0,120}/i);
-
     rows.push({
       source: "Adresowo",
       type: "mieszkanie",
-      locality: localityMatch ? localityMatch[0].trim() : "Olsztyn",
+      locality: "Olsztyn",
       street: "",
-      title: titleMatch ? titleMatch[0].trim() : "",
+      title: "",
       price: best.price,
       area: best.area,
       priceM2: best.price / best.area,
@@ -102,6 +107,29 @@ function parseCards(html) {
   }
 
   return rows;
+}
+
+function diagnostic(html) {
+  const lower = html.toLowerCase();
+  const count = (re) => (html.match(re) || []).length;
+  const snippets = [];
+  for (const term of ["/o/", "adresowo.pl/o", "zł", "m²", "m2", "mieszkanie", "olsztyn"]) {
+    let pos = lower.indexOf(term.toLowerCase());
+    if (pos >= 0) snippets.push(`${term}: ${stripHtml(html.slice(Math.max(0,pos-180), Math.min(html.length,pos+420)))}`);
+  }
+  return {
+    slashO: count(/\/o\//gi),
+    adresowoO: count(/adresowo\.pl\/o/gi),
+    href: count(/href=/gi),
+    dataHref: count(/data-href=/gi),
+    dataUrl: count(/data-url=/gi),
+    zloty: count(/zł/gi),
+    m2: count(/m(?:²|2)/gi),
+    mieszkanie: count(/mieszkanie/gi),
+    olsztyn: count(/olsztyn/gi),
+    start: stripHtml(html.slice(0, 1200)),
+    snippets
+  };
 }
 
 function dedupe(rows) {
@@ -148,7 +176,8 @@ async function searchAdresowo({ areaTarget = 62, tolerance = 10 } = {}) {
     filtered: filtered.length,
     unique: d.unique.length,
     duplicates: d.duplicates.length,
-    offers: d.unique
+    offers: d.unique,
+    diagnostic: diagnostic(response.html)
   };
 }
 
@@ -177,6 +206,6 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`ADRESOWO_SERVER_LISTENING port=${PORT}`);
   searchAdresowo({ areaTarget: 62, tolerance: 10 })
-    .then(r => console.log("ADRESOWO_SELFTEST " + JSON.stringify({ httpStatus: r.httpStatus, fetched: r.fetched, htmlLength: r.htmlLength, recognized: r.recognized, complete: r.complete, filtered: r.filtered, unique: r.unique, duplicates: r.duplicates })))
+    .then(r => console.log("ADRESOWO_SELFTEST " + JSON.stringify({ httpStatus: r.httpStatus, fetched: r.fetched, htmlLength: r.htmlLength, recognized: r.recognized, complete: r.complete, filtered: r.filtered, unique: r.unique, duplicates: r.duplicates, diagnostic: r.diagnostic })))
     .catch(e => console.error("ADRESOWO_SELFTEST_ERROR " + e.message));
 });
