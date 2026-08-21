@@ -6,13 +6,23 @@ async function resolveLocation(location){
   const name=clean(location);
   if(!name) throw new Error("Brak lokalizacji.");
 
+  // GUS FTS /gc/jpa accepts the GcReqJpa body. Keep the request minimal:
+  // the previous payload added useExtServiceIfNotFound, which is not part of
+  // the documented JPA request and caused HTTP 400 from GUS.
   const response=await fetch(GUS_FTS_URL,{
     method:"POST",
-    headers:{"Content-Type":"application/json","Accept":"application/json"},
-    body:JSON.stringify({reqs:[{gm_nazwa:name}],useExtServiceIfNotFound:false})
+    headers:{
+      "Content-Type":"application/json",
+      "Accept":"application/json"
+    },
+    body:JSON.stringify({reqs:[{gm_nazwa:name}]})
   });
 
-  if(!response.ok) throw new Error(`GUS FTS HTTP ${response.status}`);
+  if(!response.ok){
+    const body=await response.text().catch(()=>"");
+    throw new Error(`GUS FTS HTTP ${response.status}${body?` — ${body.slice(0,300)}`:""}`);
+  }
+
   const data=await response.json();
   const candidates=Array.isArray(data)?data:[];
 
