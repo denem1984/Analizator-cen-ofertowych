@@ -56,31 +56,44 @@ function parseCards(html) {
 
   while ((m = re.exec(html))) {
     const url = absUrl(m[1]);
-    const start = Math.max(0, m.index - 2200);
-    const end = Math.min(html.length, re.lastIndex + 1800);
+    if (!url) continue;
+
+    const start = Math.max(0, m.index - 5000);
+    const end = Math.min(html.length, re.lastIndex + 5000);
     const context = stripHtml(html.slice(start, end));
 
-    // Na stronie karty występują kolejno cena i powierzchnia, np. 589 000 zł / 61 m².
+    // Adresowo listing cards expose price and area as ordinary text.
+    // Use the first plausible price followed by a plausible area in the same card context.
     const priceMatches = [...context.matchAll(/([0-9][0-9 .\u00a0]{3,})\s*(?:zł|PLN)\b/gi)];
     const areaMatches = [...context.matchAll(/([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\b/gi)];
     if (!priceMatches.length || !areaMatches.length) continue;
 
     const price = number(priceMatches[0][1]);
     const area = number(areaMatches[0][1]);
-    if (!price || !area || !url) continue;
+    if (!price || !area || area < 15 || area > 500) continue;
 
-    const title = context.match(/Olsztyn[^.]{0,180}?Mieszkanie na sprzedaż[^.]{0,80}/i);
-    const localityMatch = context.match(/Olsztyn(?:\s+[^,.;]{1,80})?/i);
+    // Prefer an area close to the first price; this avoids picking up unrelated text.
+    let selectedArea = area;
+    for (const am of areaMatches) {
+      const a = number(am[1]);
+      if (Number.isFinite(a) && a >= 15 && a <= 500) {
+        selectedArea = a;
+        break;
+      }
+    }
+
+    const localityMatch = context.match(/Olsztyn(?:[ ,]+[^.]{0,100})?/i);
+    const titleMatch = context.match(/Olsztyn[^.]{0,180}?Mieszkanie na sprzedaż[^.]{0,120}/i);
 
     rows.push({
       source: "Adresowo",
       type: "mieszkanie",
       locality: localityMatch ? localityMatch[0].trim() : "Olsztyn",
       street: "",
-      title: title ? title[0].trim() : "",
+      title: titleMatch ? titleMatch[0].trim() : "Mieszkanie na sprzedaż Olsztyn",
       price,
-      area,
-      priceM2: price / area,
+      area: selectedArea,
+      priceM2: price / selectedArea,
       url
     });
   }
