@@ -3,6 +3,23 @@ const GUS_FTS_BASE="https://geo.stat.gov.pl/api/fts";
 function clean(v){return String(v||"").replace(/\s+/g," ").trim();}
 function sameName(a,b){return clean(a).toLowerCase()===clean(b).toLowerCase();}
 
+// Some city-gminas are intermittently not returned by the GUS FTS
+// autocomplete endpoints even though they are valid TERYT/SIMC locations.
+// Keep a small authoritative fallback for those cases and continue using
+// GUS as the primary resolver for all other locations.
+const FALLBACK_LOCATIONS={
+  "olsztyn":{
+    name:"Olsztyn",
+    teryt:"2862011",
+    simc:"0964465",
+    wojewodztwo:"warmińsko-mazurskie",
+    wojewodztwoTeryt:"28",
+    powiat:"Olsztyn",
+    powiatTeryt:"2862",
+    gmina:"Olsztyn"
+  }
+};
+
 async function requestGus(path,body){
   const response=await fetch(`${GUS_FTS_BASE}${path}`,{
     method:"POST",
@@ -44,6 +61,12 @@ function toLocation(hit,name){
   };
 }
 
+function fallbackLocation(name){
+  const fallback=FALLBACK_LOCATIONS[clean(name).toLowerCase()];
+  if(!fallback) return null;
+  return {input:name,...fallback,source:"GUS TERYT/SIMC fallback"};
+}
+
 async function resolveLocation(location){
   const name=clean(location);
   if(!name) throw new Error("Brak lokalizacji.");
@@ -63,6 +86,9 @@ async function resolveLocation(location){
       lastError=error;
     }
   }
+
+  const fallback=fallbackLocation(name);
+  if(fallback) return fallback;
 
   if(lastError && !candidates.length) throw lastError;
   throw new Error(`Nie znaleziono lokalizacji: ${name}`);
