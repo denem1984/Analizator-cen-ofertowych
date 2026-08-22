@@ -1,11 +1,11 @@
 {
   "name": "analizator-cen-ofertowych-backend",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
-  "description": "Backend wyszukiwania i weryfikacji ofert dla Analizatora Cen Ofertowych",
-  "main": "server.js",
+  "description": "Backend wyszukiwania ofert dla Analizatora Cen Ofertowych",
+  "main": "compat-server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node compat-server.js",
     "test:live:no": "node live-test-nieruchomosci-online.js"
   },
   "engines": {
