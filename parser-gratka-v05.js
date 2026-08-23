@@ -22,6 +22,13 @@ function targetUrl(location = 'Olsztyn', areaTarget = 62, tolerance = 10) {
   return url.href;
 }
 
+function pageUrl(baseUrl, page) {
+  const u = new URL(baseUrl);
+  if (page <= 1) u.searchParams.delete('page');
+  else u.searchParams.set('page', String(page));
+  return u.href;
+}
+
 function fetchHtml(url) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, {
@@ -34,11 +41,7 @@ function fetchHtml(url) {
       let html = '';
       res.setEncoding('utf8');
       res.on('data', chunk => { html += chunk; });
-      res.on('end', () => resolve({
-        status: res.statusCode,
-        html,
-        finalUrl: res.headers.location || url
-      }));
+      res.on('end', () => resolve({ status: res.statusCode, html, finalUrl: res.headers.location || url }));
     });
     req.on('error', reject);
     req.setTimeout(FETCH_TIMEOUT_MS, () => req.destroy(new Error('timeout')));
@@ -73,10 +76,7 @@ function findFirst(root, keys) {
     if (found !== null || v == null || typeof v !== 'object') return;
     if (Array.isArray(v)) return v.forEach(walk);
     for (const key of Object.keys(v)) {
-      if (wanted.has(key) && v[key] != null) {
-        found = v[key];
-        return;
-      }
+      if (wanted.has(key) && v[key] != null) { found = v[key]; return; }
     }
     Object.values(v).forEach(walk);
   };
@@ -104,65 +104,32 @@ function normalizeUrl(value, base) {
   try {
     const u = new URL(String(value), base);
     u.hash = '';
-    [...u.searchParams.keys()].forEach(k => {
-      if (/utm_|fbclid|gclid/i.test(k)) u.searchParams.delete(k);
-    });
+    [...u.searchParams.keys()].forEach(k => { if (/utm_|fbclid|gclid/i.test(k)) u.searchParams.delete(k); });
     return u.href.replace(/\/$/, '').toLowerCase();
-  } catch (_) {
-    return String(value || '').trim().toLowerCase();
-  }
-}
-
-function absoluteUrl(href, base) {
-  if (!href) return null;
-  try { return new URL(href, base).href; } catch (_) { return null; }
+  } catch (_) { return String(value || '').trim().toLowerCase(); }
 }
 
 function address(value) {
   const a = value && typeof value === 'object' ? value : {};
-  return {
-    locality: a.addressLocality || a.locality || a.city || '',
-    street: a.streetAddress || a.street || a.addressLine || ''
-  };
+  return { locality: a.addressLocality || a.locality || a.city || '', street: a.streetAddress || a.street || a.addressLine || '' };
 }
 
 function offerVariants(product) {
   const offers = product?.offers;
   if (!offers) return [];
-  if (Array.isArray(offers)) {
-    return offers.flatMap(x => x?.offers
-      ? (Array.isArray(x.offers) ? x.offers : [x.offers])
-      : [x]);
-  }
+  if (Array.isArray(offers)) return offers.flatMap(x => x?.offers ? (Array.isArray(x.offers) ? x.offers : [x.offers]) : [x]);
   if (offers.offers) return Array.isArray(offers.offers) ? offers.offers : [offers.offers];
   return [offers];
 }
 
 function parseProduct(product, offer, base) {
-  const offered = offer?.itemOffered && typeof offer.itemOffered === 'object'
-    ? offer.itemOffered : {};
-  const price = num(
-    offer?.price ?? offer?.priceSpecification?.price ?? offer?.lowPrice ??
-    findFirst(offer, ['price', 'lowPrice']) ??
-    findFirst(product, ['price', 'lowPrice', 'highPrice'])
-  );
-  const area = areaNum(
-    findFirst(offered, ['floorSize', 'area', 'size']) ??
-    findFirst(product, ['floorSize', 'area', 'size'])
-  );
-  const url = normalizeUrl(
-    offer?.url || findFirst(offered, ['url']) || product.url || findFirst(product, ['url']),
-    base
-  );
-  const addr = address(
-    offered.address || findFirst(offered, ['address']) ||
-    product.address || findFirst(product, ['address'])
-  );
+  const offered = offer?.itemOffered && typeof offer.itemOffered === 'object' ? offer.itemOffered : {};
+  const price = num(offer?.price ?? offer?.priceSpecification?.price ?? offer?.lowPrice ?? findFirst(offer, ['price', 'lowPrice']) ?? findFirst(product, ['price', 'lowPrice', 'highPrice']));
+  const area = areaNum(findFirst(offered, ['floorSize', 'area', 'size']) ?? findFirst(product, ['floorSize', 'area', 'size']));
+  const url = normalizeUrl(offer?.url || findFirst(offered, ['url']) || product.url || findFirst(product, ['url']), base);
+  const addr = address(offered.address || findFirst(offered, ['address']) || product.address || findFirst(product, ['address']));
   if (price == null || area == null || !url) return null;
-  return {
-    source: 'Gratka', type: 'mieszkanie', locality: addr.locality,
-    street: addr.street, price, area, priceM2: price / area, url
-  };
+  return { source: 'Gratka', type: 'mieszkanie', locality: addr.locality, street: addr.street, price, area, priceM2: price / area, url };
 }
 
 function extract(roots, base) {
@@ -188,10 +155,7 @@ function dedupe(rows) {
   for (const row of rows) {
     const urlKey = row.url;
     const dataKey = `${row.price}|${row.area}`;
-    if ((urlKey && urls.has(urlKey)) || keys.has(dataKey)) {
-      duplicates.push(row);
-      continue;
-    }
+    if ((urlKey && urls.has(urlKey)) || keys.has(dataKey)) { duplicates.push(row); continue; }
     if (urlKey) urls.add(urlKey);
     keys.add(dataKey);
     unique.push(row);
@@ -199,56 +163,32 @@ function dedupe(rows) {
   return { unique, duplicates };
 }
 
-function pageNumber(url) {
-  try {
-    const n = Number(new URL(url).searchParams.get('page') || 1);
-    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
-  } catch (_) {
-    return 1;
-  }
-}
-
-function nextPageFromHtml(html, baseUrl, currentPage) {
-  const links = [...html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi)];
-  for (const match of links) {
-    const url = absoluteUrl(match[1], baseUrl);
-    if (url && pageNumber(url) === currentPage + 1) return url;
-  }
-
-  const relNext = [
-    ...html.matchAll(/<a\b[^>]*\brel\s*=\s*["']next["'][^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi),
-    ...html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*\brel\s*=\s*["']next["'][^>]*>/gi)
-  ];
-  for (const match of relNext) {
-    const url = absoluteUrl(match[1], baseUrl);
-    if (url && pageNumber(url) === currentPage + 1) return url;
-  }
-  return null;
-}
-
 async function searchGratka({ location = 'Olsztyn', areaTarget = 62, tolerance = 10, radius = 0 } = {}) {
-  // Gratka nie obsługuje promienia. Filtr powierzchni przekazujemy bezpośrednio
-  // do portalu, zachowując dokładny format używany przez jego URL-e.
   const sourceUrl = targetUrl(location, areaTarget, tolerance);
-  let currentUrl = sourceUrl;
   let pagesFetched = 0;
   let totalHtmlLength = 0;
   let totalRecognized = 0;
   let firstStatus = 0;
   const allRows = [];
-  const seenPages = new Set();
+  const pageStatuses = [];
 
-  while (currentUrl && pagesFetched < MAX_PAGES) {
-    const normalizedPageUrl = normalizeUrl(currentUrl, currentUrl);
-    if (!normalizedPageUrl || seenPages.has(normalizedPageUrl)) break;
-    seenPages.add(normalizedPageUrl);
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const currentUrl = pageUrl(sourceUrl, page);
+    let response;
+    try {
+      response = await fetchHtml(currentUrl);
+    } catch (e) {
+      pageStatuses.push({ page, url: currentUrl, httpStatus: 0, error: String(e?.message || e) });
+      break;
+    }
 
-    const response = await fetchHtml(currentUrl);
     pagesFetched++;
-    if (!firstStatus) firstStatus = Number(response.status) || 0;
+    const status = Number(response.status) || 0;
+    if (!firstStatus) firstStatus = status;
     totalHtmlLength += response.html.length;
+    pageStatuses.push({ page, url: currentUrl, httpStatus: status, htmlLength: response.html.length });
 
-    if (!(response.status >= 200 && response.status < 400)) break;
+    if (!(status >= 200 && status < 400)) break;
 
     const baseUrl = response.finalUrl || currentUrl;
     const rows = extract(jsonLd(response.html), baseUrl);
@@ -256,10 +196,6 @@ async function searchGratka({ location = 'Olsztyn', areaTarget = 62, tolerance =
     allRows.push(...rows);
 
     if (rows.length === 0) break;
-
-    const next = nextPageFromHtml(response.html, baseUrl, pageNumber(baseUrl));
-    if (!next) break;
-    currentUrl = next;
   }
 
   const complete = allRows.filter(o => o.locality && Number.isFinite(o.price) && Number.isFinite(o.area) && o.url);
@@ -275,7 +211,7 @@ async function searchGratka({ location = 'Olsztyn', areaTarget = 62, tolerance =
     complete: complete.length, filtered: filtered.length,
     unique: d.unique.length, duplicates: d.duplicates.length,
     offers: d.unique, requestedRadius: Number(radius) || 0,
-    appliedRadius: 0, radiusSupported: false, pagesFetched
+    appliedRadius: 0, radiusSupported: false, pagesFetched, pageStatuses
   };
 }
 
@@ -301,7 +237,7 @@ if (require.main === module || process.argv[1] === undefined) {
         return res.end(JSON.stringify(result));
       }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ service: 'Gratka parser v0.5', status: 'ok' }));
+      res.end(JSON.stringify({ service: 'Gratka parser v0.6', status: 'ok' }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
