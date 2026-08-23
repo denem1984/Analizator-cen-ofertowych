@@ -1,6 +1,6 @@
 const {searchNieruchomosciOnline}=require('./live-parser');
 const {searchMorizon}=require('./live-morizon');
-const {search:searchGratka}=require('./parser-gratka-v05');
+const {searchGratka}=require('./parser-gratka-v05');
 const {URL}=require('url');
 const MAX_PAGES=12,TIMEOUT=20000,DETAIL_CONCURRENCY=8;
 const slug=v=>String(v||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
