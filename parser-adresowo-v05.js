@@ -1,20 +1,147 @@
-const http=require('http');const{URL}=require('url');const PORT=Number(process.env.PORT)||10000;const AVAILABLE_RADII=[0,5,10,20,50,100];const MAX_PAGES=50;
-function slugLocation(location='Olsztyn'){return String(location).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');}
-function resolveRadius(radius){const requested=Math.max(0,Number(radius)||0);return AVAILABLE_RADII.find(x=>x>=requested)??AVAILABLE_RADII[AVAILABLE_RADII.length-1];}
-function targetUrl(location='Olsztyn',radius=0){const applied=resolveRadius(radius),base=`https://adresowo.pl/mieszkania/${slugLocation(location)}/`;return applied>0?`https://adresowo.pl/f/mieszkania/${slugLocation(location)}/g${applied}`:base;}
-async function fetchHtml(url){const c=new AbortController(),t=setTimeout(()=>c.abort(),30000);try{const r=await fetch(url,{redirect:'follow',signal:c.signal,headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36','Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8','Accept-Language':'pl-PL,pl;q=0.9,en;q=0.8'}});return{status:r.status,ok:r.ok,finalUrl:r.url,html:await r.text()}}finally{clearTimeout(t)}}
-function strip(v){return String(v||'').replace(/&sup2;|&#178;|&#xB2;/gi,'²').replace(/&nbsp;|&#160;/gi,' ').replace(/&amp;/gi,'&').replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()}
-function num(v){if(v==null)return null;const s=String(v).replace(/\u00a0/g,' ').trim(),n=Number(s.replace(/zł|PLN/gi,'').replace(/[^0-9,.-]/g,'').replace(/,/g,'.'));return Number.isFinite(n)?n:null}
+const http=require('http');
+const {URL}=require('url');
+const PORT=Number(process.env.PORT)||10000;
+const AVAILABLE_RADII=[0,5,10,20,50,100];
+const MAX_PAGES=50;
+const FETCH_TIMEOUT_MS=60000;
+const FETCH_RETRIES=2;
+const DETAIL_CONCURRENCY=6;
+
+function slugLocation(location='Olsztyn'){
+  return String(location).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+}
+function resolveRadius(radius){
+  const requested=Math.max(0,Number(radius)||0);
+  return AVAILABLE_RADII.find(x=>x>=requested)??AVAILABLE_RADII[AVAILABLE_RADII.length-1];
+}
+function targetUrl(location='Olsztyn',radius=0){
+  const applied=resolveRadius(radius),base=`https://adresowo.pl/mieszkania/${slugLocation(location)}/`;
+  return applied>0?`https://adresowo.pl/f/mieszkania/${slugLocation(location)}/g${applied}`:base;
+}
+
+async function fetchHtml(url){
+  let lastError=null;
+  for(let attempt=1;attempt<=FETCH_RETRIES;attempt++){
+    const c=new AbortController();
+    const t=setTimeout(()=>c.abort(),FETCH_TIMEOUT_MS);
+    try{
+      const r=await fetch(url,{redirect:'follow',signal:c.signal,headers:{
+        'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36',
+        'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language':'pl-PL,pl;q=0.9,en;q=0.8'
+      }});
+      return {status:r.status,ok:r.ok,finalUrl:r.url,html:await r.text(),attempt};
+    }catch(e){
+      lastError=e;
+      if(attempt<FETCH_RETRIES) await new Promise(resolve=>setTimeout(resolve,1000*attempt));
+    }finally{clearTimeout(t)}
+  }
+  throw lastError||new Error('fetch failed');
+}
+
+function strip(v){
+  return String(v||'').replace(/&sup2;|&#178;|&#xB2;/gi,'²').replace(/&nbsp;|&#160;/gi,' ').replace(/&amp;/gi,'&').replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+}
+function num(v){
+  if(v==null)return null;
+  const s=String(v).replace(/\u00a0/g,' ').trim();
+  const n=Number(s.replace(/zł|PLN/gi,'').replace(/[^0-9,.-]/g,'').replace(/,/g,'.'));
+  return Number.isFinite(n)?n:null;
+}
 function abs(v,base){try{const u=new URL(v,base);u.hash='';return u.href.replace(/\/$/,'').toLowerCase()}catch{return''}}
-function listingUrls(html,base){const a=[],s=new Set(),r=/href\s*=\s*["']([^"']+)["']/gi;let m;while((m=r.exec(html))){if(!m[1].startsWith('/o/'))continue;const u=abs(m[1],base);if(u&&!s.has(u)){s.add(u);a.push(u)}}return a}
-function nextPageUrl(html,base){const links=[...html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];for(const m of links){const label=strip(m[2]).toLowerCase();if(label.includes('następna strona')){const u=abs(m[1],base);if(u&&u!==abs(base,base))return u;}}const current=abs(base,base);const currentMatch=current.match(/\/_l(\d+)(?:_|\/|$)/i);const currentPage=currentMatch?Number(currentMatch[1]):1;const wanted=currentPage+1;for(const m of links){const u=abs(m[1],base);if(!u)continue;const path=new URL(u).pathname;if(new RegExp(`/_l${wanted}(?:_|/|$)`,`i`).test(path))return u;}return null}
-function metaValues(html){const out={title:'',description:'',ogTitle:'',ogDescription:''};const tm=html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);if(tm)out.title=strip(tm[1]);const metas=[...html.matchAll(/<meta\s+([^>]+)>/gi)];for(const m of metas){const a=m[1],name=(a.match(/(?:name|property)=["']([^"']+)["']/i)||[])[1],content=(a.match(/content=["']([^"']*)["']/i)||[])[1];if(!name||content==null)continue;if(name.toLowerCase()==='description')out.description=strip(content);if(name.toLowerCase()==='og:title')out.ogTitle=strip(content);if(name.toLowerCase()==='og:description')out.ogDescription=strip(content)}return out}
-function parseMeta(html){const m=metaValues(html),title=(m.title||m.ogTitle||'').replace(/\s+/g,' ').trim(),exact=title.match(/-\s*([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\s*-\s*([0-9][0-9 .\u00a0]*)\s*zł\s*$/i);if(exact){const area=num(exact[1]),price=num(exact[2]);if(area>=10&&area<=1000&&price>=10000)return{price,area,method:'meta-title-exact'}}const pms=[...title.matchAll(/([0-9][0-9 .\u00a0]*)\s*zł\b/gi)].map(x=>num(x[1])).filter(x=>x>=10000),ams=[...title.matchAll(/([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\b/gi)].map(x=>num(x[1])).filter(x=>x>=10&&x<=1000);if(pms.length&&ams.length)return{price:pms[pms.length-1],area:ams[ams.length-1],method:'meta-title'};return null}
-function jsonLdRaw(html){const out=[];const r=/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;let m;while((m=r.exec(html))){try{out.push(JSON.parse(m[1].trim()))}catch{}}return out}
+
+function listingUrls(html,base){
+  const out=[],seen=new Set(),r=/href\s*=\s*["']([^"']+)["']/gi;let m;
+  while((m=r.exec(html))){
+    if(!m[1].startsWith('/o/')&&!/^https?:\/\/adresowo\.pl\/o\//i.test(m[1]))continue;
+    const u=abs(m[1],base);
+    if(u&&!seen.has(u)){seen.add(u);out.push(u)}
+  }
+  return out;
+}
+
+function nextPageUrl(html,base){
+  const links=[...html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
+  const current=abs(base,base);
+  for(const m of links){
+    const label=strip(m[2]).toLowerCase();
+    if(label.includes('następna strona')){
+      const u=abs(m[1],base);
+      if(u&&u!==current)return u;
+    }
+  }
+  const path=new URL(current).pathname;
+  const currentMatch=path.match(/\/_l(\d+)(?:_|\/|$)/i);
+  const currentPage=currentMatch?Number(currentMatch[1]):1;
+  const wanted=currentPage+1;
+  for(const m of links){
+    const u=abs(m[1],base);if(!u)continue;
+    const p=new URL(u).pathname;
+    if(new RegExp(`/_l${wanted}(?:_|/|$)`,'i').test(p))return u;
+  }
+  return null;
+}
+
+function metaValues(html){
+  const out={title:'',description:'',ogTitle:'',ogDescription:''};
+  const tm=html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);if(tm)out.title=strip(tm[1]);
+  const metas=[...html.matchAll(/<meta\s+([^>]+)>/gi)];
+  for(const m of metas){
+    const a=m[1],name=(a.match(/(?:name|property)=["']([^"']+)["']/i)||[])[1],content=(a.match(/content=["']([^"']*)["']/i)||[])[1];
+    if(!name||content==null)continue;
+    if(name.toLowerCase()==='description')out.description=strip(content);
+    if(name.toLowerCase()==='og:title')out.ogTitle=strip(content);
+    if(name.toLowerCase()==='og:description')out.ogDescription=strip(content);
+  }
+  return out;
+}
+function parseMeta(html){
+  const m=metaValues(html),title=(m.title||m.ogTitle||'').replace(/\s+/g,' ').trim();
+  const exact=title.match(/-\s*([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\s*-\s*([0-9][0-9 .\u00a0]*)\s*zł\s*$/i);
+  if(exact){const area=num(exact[1]),price=num(exact[2]);if(area>=10&&area<=1000&&price>=10000)return{price,area,method:'meta-title-exact'}}
+  const pms=[...title.matchAll(/([0-9][0-9 .\u00a0]*)\s*zł\b/gi)].map(x=>num(x[1])).filter(x=>x>=10000);
+  const ams=[...title.matchAll(/([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\b/gi)].map(x=>num(x[1])).filter(x=>x>=10&&x<=1000);
+  if(pms.length&&ams.length)return{price:pms[pms.length-1],area:ams[ams.length-1],method:'meta-title'};
+  return null;
+}
+function jsonLdRaw(html){
+  const out=[];const r=/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;let m;
+  while((m=r.exec(html))){try{out.push(JSON.parse(m[1].trim()))}catch{}}
+  return out;
+}
 function scalar(v){if(v==null)return null;if(typeof v==='number')return v;if(typeof v==='string')return num(v);if(typeof v==='object')return num(v.value??v.amount??v.name);return null}
 function walkJson(root,cb){const stack=[root],seen=new Set();while(stack.length){const x=stack.pop();if(!x||typeof x!=='object'||seen.has(x))continue;seen.add(x);cb(x);if(Array.isArray(x)){for(let i=x.length-1;i>=0;i--)stack.push(x[i])}else for(const v of Object.values(x))if(v&&typeof v==='object')stack.push(v)}}
-function parseDetail(html){const meta=parseMeta(html);if(meta)return meta;for(const root of jsonLdRaw(html)){let found=null;walkJson(root,x=>{if(found)return;const offers=x.offers||x.Offers||x.offer,p=scalar(offers?.price??offers?.priceSpecification?.price??x.price??x.priceValue),a=scalar(x.floorSize??x.floorarea??x.area??x.livingArea??x.size);if(p>=10000&&a>=10&&a<=1000)found={price:p,area:a,method:'jsonld'}});if(found)return found}const text=strip(html),ams=[...text.matchAll(/([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\b/gi)].map(x=>({area:num(x[1]),i:x.index})).filter(x=>x.area>=10&&x.area<=1000),pms=[...text.matchAll(/([0-9][0-9 .\u00a0]{2,})\s*(?:zł|PLN)\b/gi)].map(x=>({price:num(x[1]),i:x.index})).filter(x=>x.price>=10000);let best=null;for(const p of pms)for(const a of ams){const d=Math.abs(p.i-a.i);if(!best||d<best.d)best={price:p.price,area:a.area,d}}return best?{price:best.price,area:best.area,method:'text'}:null}
-async function inspect(url){try{const r=await fetchHtml(url),j=jsonLdRaw(r.html),meta=metaValues(r.html),parsed=parseDetail(r.html);return{url,httpStatus:r.status,ok:r.ok,htmlLength:r.html.length,zloty:(r.html.match(/zł/gi)||[]).length,m2:(r.html.match(/m(?:²|2)/gi)||[]).length,jsonLd:j.length,metaTitle:meta.title,metaDescription:meta.description,parsed}}catch(e){return{url,error:String(e.message||e)}}}
-async function search({location='Olsztyn',areaTarget=62,tolerance=10,radius=0}={}){const requestedRadius=Math.max(0,Number(radius)||0),appliedRadius=resolveRadius(requestedRadius),sourceUrl=targetUrl(location,requestedRadius);let pageUrl=sourceUrl,pagesFetched=0;const pageUrls=[],allListingUrls=[],seenListingUrls=new Set();while(pageUrl&&pagesFetched<MAX_PAGES){const page=await fetchHtml(pageUrl);pagesFetched++;pageUrls.push(page.finalUrl||pageUrl);if(!page.ok)break;for(const u of listingUrls(page.html,page.finalUrl||pageUrl)){if(!seenListingUrls.has(u)){seenListingUrls.add(u);allListingUrls.push(u)}}const next=nextPageUrl(page.html,page.finalUrl||pageUrl);if(!next||seenListingUrls.has(`__PAGE__${next}`))break;seenListingUrls.add(`__PAGE__${next}`);pageUrl=next}const d=await Promise.all(allListingUrls.map(inspect)),parsed=d.filter(x=>x.parsed).map(x=>({source:'Adresowo',type:'mieszkanie',locality:location,street:'',title:'',price:x.parsed.price,area:x.parsed.area,priceM2:x.parsed.price/x.parsed.area,url:x.url})),min=areaTarget*(1-tolerance/100),max=areaTarget*(1+tolerance/100),f=parsed.filter(x=>x.area>=min&&x.area<=max),seenUrl=new Set(),seenData=new Set(),unique=[],dups=[];for(const x of f){const k=`${x.price}|${x.area}`;if(seenUrl.has(x.url)||seenData.has(k)){dups.push(x);continue}seenUrl.add(x.url);seenData.add(k);unique.push(x)}return{portal:'Adresowo',requestedLocation:location,sourceUrl,httpStatus:200,fetched:pagesFetched>0,htmlLength:0,pagesFetched,pageUrls,listingUrls:allListingUrls.length,recognized:parsed.length,complete:parsed.length,filtered:f.length,unique:unique.length,duplicates:dups.length,offers:unique,detailDiagnostics:d.slice(0,5),requestedRadius,appliedRadius,radiusSupported:requestedRadius===0||appliedRadius>=requestedRadius}}
-if(require.main===module||process.argv[1]===undefined){const server=http.createServer(async(req,res)=>{try{const u=new URL(req.url||'/',`http://${req.headers.host||'localhost'}`);if(u.pathname==='/health'){res.writeHead(200,{'Content-Type':'application/json'});return res.end(JSON.stringify({ok:true,portal:'Adresowo'}))}if(u.pathname==='/api/adresowo'){const r=await search({location:u.searchParams.get('location')||'Olsztyn',areaTarget:Number(u.searchParams.get('area')||62),tolerance:Number(u.searchParams.get('tolerance')||10),radius:Number(u.searchParams.get('radius')||0)});res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify(r))}res.end(JSON.stringify({service:'Adresowo parser v0.5',status:'ok'}))}catch(e){res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({ok:false,error:String(e.message||e)}))}});server.listen(PORT,'0.0.0.0',()=>{console.log(`ADRESOWO_SERVER_LISTENING port=${PORT}`)});}
+function parseDetail(html){
+  const meta=parseMeta(html);if(meta)return meta;
+  for(const root of jsonLdRaw(html)){let found=null;walkJson(root,x=>{if(found)return;const offers=x.offers||x.Offers||x.offer,p=scalar(offers?.price??offers?.priceSpecification?.price??x.price??x.priceValue),a=scalar(x.floorSize??x.floorarea??x.area??x.livingArea??x.size);if(p>=10000&&a>=10&&a<=1000)found={price:p,area:a,method:'jsonld'}});if(found)return found}
+  const text=strip(html),ams=[...text.matchAll(/([0-9]+(?:[,.][0-9]+)?)\s*m(?:²|2)\b/gi)].map(x=>({area:num(x[1]),i:x.index})).filter(x=>x.area>=10&&x.area<=1000),pms=[...text.matchAll(/([0-9][0-9 .\u00a0]{2,})\s*(?:zł|PLN)\b/gi)].map(x=>({price:num(x[1]),i:x.index})).filter(x=>x.price>=10000);let best=null;for(const p of pms)for(const a of ams){const d=Math.abs(p.i-a.i);if(!best||d<best.d)best={price:p.price,area:a.area,d}}return best?{price:best.price,area:best.area,method:'text'}:null;
+}
+async function inspect(url){try{const r=await fetchHtml(url),j=jsonLdRaw(r.html),meta=metaValues(r.html),parsed=parseDetail(r.html);return{url,httpStatus:r.status,ok:r.ok,htmlLength:r.html.length,zloty:(r.html.match(/zł/gi)||[]).length,m2:(r.html.match(/m(?:²|2)/gi)||[]).length,jsonLd:j.length,metaTitle:meta.title,metaDescription:meta.description,parsed,attempt:r.attempt}}catch(e){return{url,error:String(e.message||e)}}}
+
+async function mapLimit(items,limit,fn){
+  const out=new Array(items.length);let next=0;
+  async function worker(){while(true){const i=next++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}
+  await Promise.all(Array.from({length:Math.min(limit,items.length)},worker));return out;
+}
+
+async function search({location='Olsztyn',areaTarget=62,tolerance=10,radius=0}={}){
+  const requestedRadius=Math.max(0,Number(radius)||0),appliedRadius=resolveRadius(requestedRadius),sourceUrl=targetUrl(location,requestedRadius);
+  let pageUrl=sourceUrl,pagesFetched=0;const pageUrls=[],allListingUrls=[],seenListingUrls=new Set(),seenPages=new Set();
+  while(pageUrl&&pagesFetched<MAX_PAGES){
+    const normalizedPage=abs(pageUrl,pageUrl);if(!normalizedPage||seenPages.has(normalizedPage))break;seenPages.add(normalizedPage);
+    const page=await fetchHtml(pageUrl);pagesFetched++;pageUrls.push(page.finalUrl||pageUrl);
+    if(!page.ok)break;
+    for(const u of listingUrls(page.html,page.finalUrl||pageUrl)){if(!seenListingUrls.has(u)){seenListingUrls.add(u);allListingUrls.push(u)}}
+    const next=nextPageUrl(page.html,page.finalUrl||pageUrl);if(!next)break;pageUrl=next;
+  }
+  const d=await mapLimit(allListingUrls,DETAIL_CONCURRENCY,inspect);
+  const parsed=d.filter(x=>x.parsed).map(x=>({source:'Adresowo',type:'mieszkanie',locality:location,street:'',title:'',price:x.parsed.price,area:x.parsed.area,priceM2:x.parsed.price/x.parsed.area,url:x.url}));
+  const min=areaTarget*(1-tolerance/100),max=areaTarget*(1+tolerance/100),f=parsed.filter(x=>x.area>=min&&x.area<=max),seenUrl=new Set(),seenData=new Set(),unique=[],dups=[];
+  for(const x of f){const k=`${x.price}|${x.area}`;if(seenUrl.has(x.url)||seenData.has(k)){dups.push(x);continue}seenUrl.add(x.url);seenData.add(k);unique.push(x)}
+  return{portal:'Adresowo',requestedLocation:location,sourceUrl,httpStatus:200,fetched:pagesFetched>0,htmlLength:0,pagesFetched,pageUrls,listingUrls:allListingUrls.length,recognized:parsed.length,complete:parsed.length,filtered:f.length,unique:unique.length,duplicates:dups.length,offers:unique,detailDiagnostics:d.slice(0,5),requestedRadius,appliedRadius,radiusSupported:requestedRadius===0||appliedRadius>=requestedRadius};
+}
+
+if(require.main===module||process.argv[1]===undefined){
+  const server=http.createServer(async(req,res)=>{try{const u=new URL(req.url||'/',`http://${req.headers.host||'localhost'}`);if(u.pathname==='/health'){res.writeHead(200,{'Content-Type':'application/json'});return res.end(JSON.stringify({ok:true,portal:'Adresowo'}))}if(u.pathname==='/api/adresowo'){const r=await search({location:u.searchParams.get('location')||'Olsztyn',areaTarget:Number(u.searchParams.get('area')||62),tolerance:Number(u.searchParams.get('tolerance')||10),radius:Number(u.searchParams.get('radius')||0)});res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify(r))}res.end(JSON.stringify({service:'Adresowo parser v0.5',status:'ok'}))}catch(e){res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({ok:false,error:String(e.message||e)}))}});server.listen(PORT,'0.0.0.0',()=>console.log(`ADRESOWO_SERVER_LISTENING port=${PORT}`));
+}
 module.exports={search};
