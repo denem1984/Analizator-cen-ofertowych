@@ -1,8 +1,7 @@
 const { URL } = require('url');
 
 // Wyszukiwanie komercyjne musi być ograniczone czasowo. Wcześniej parser wykonywał
-// do 30 stron portalu sekwencyjnie, a Adresowo dodatkowo pobierało kolejno strony
-// każdej oferty. Przy połączeniu 5 portali kończyło się to 502 z bramy.
+// do 30 stron portalu sekwencyjnie, a Adresowo dodatkowo pobierało kolejno strony każdej oferty.
 const MAX_PAGES = 12;
 const ADRESOWO_MAX_LISTING_URLS = 40;
 const FETCH_TIMEOUT_MS = 10000;
@@ -27,6 +26,15 @@ function area(v) {
 function abs(v, base) {
   try { const u=new URL(String(v),base); u.hash=''; return u.href.replace(/\/$/,'').toLowerCase(); }
   catch { return ''; }
+}
+function validOfferUrl(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    if (!/^https?:$/i.test(u.protocol)) return false;
+    if (/\/undefined(?:\/|$)/i.test(u.pathname)) return false;
+    return true;
+  } catch { return false; }
 }
 function fetchHtml(url, timeoutMs=FETCH_TIMEOUT_MS) {
   return new Promise((resolve,reject)=>{
@@ -69,7 +77,7 @@ function parseStructured(html,base,portal,fallback) {
       const ar=area(obj.floorSize ?? obj.area ?? item.floorSize ?? item.area);
       const url=abs(obj.url||item.url||obj['@id']||item['@id'],base);
       const a=addressOf(item,fallback);
-      if(price!=null&&ar!=null&&url) rows.push({source:portal,type:'Nieruchomość komercyjna',locality:a.locality||fallback,street:a.street||'',price,area:ar,priceM2:price/ar,url,title:String(obj.name||item.name||'').trim()});
+      if(price!=null&&ar!=null&&validOfferUrl(url)) rows.push({source:portal,type:'Nieruchomość komercyjna',locality:a.locality||fallback,street:a.street||'',price,area:ar,priceM2:price/ar,url,title:String(obj.name||item.name||'').trim()});
     } else if(types.includes('Product')){
       const offered=obj.itemOffered||{}; const offers=obj.offers; const list=Array.isArray(offers)?offers:(offers?[offers]:[]);
       for(const offer of list){
@@ -77,7 +85,7 @@ function parseStructured(html,base,portal,fallback) {
         const ar=area(offered.floorSize ?? offered.area ?? obj.floorSize ?? obj.area);
         const url=abs(offer?.url||obj.url||offered.url||obj['@id'],base);
         const a=addressOf(offered.address?offered:obj,fallback);
-        if(price!=null&&ar!=null&&url) rows.push({source:portal,type:'Nieruchomość komercyjna',locality:a.locality||fallback,street:a.street||'',price,area:ar,priceM2:price/ar,url,title:String(obj.name||offered.name||'').trim()});
+        if(price!=null&&ar!=null&&validOfferUrl(url)) rows.push({source:portal,type:'Nieruchomość komercyjna',locality:a.locality||fallback,street:a.street||'',price,area:ar,priceM2:price/ar,url,title:String(obj.name||offered.name||'').trim()});
       }
     }
   });
@@ -87,13 +95,30 @@ function parseHtmlFallback(html,base,portal,fallback) {
   const rows=[];
   const links=[...html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
   for(const m of links){
-    const href=abs(m[1],base); if(!href)continue;
+    const href=abs(m[1],base); if(!validOfferUrl(href))continue;
     if(!/(morizon|gratka|domiporta|nieruchomosci-online)\.pl/i.test(href))continue;
     const text=String(m[2]).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
     const start=Math.max(0,m.index-1800),end=Math.min(html.length,m.index+m[0].length+1800),chunk=html.slice(start,end).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
     const ps=[...chunk.matchAll(/([0-9][0-9\s.]{2,})\s*(?:zł|PLN)\b/gi)].map(x=>num(x[1])).filter(Number.isFinite);
     const as=[...chunk.matchAll(/([0-9]+(?:[.,][0-9]+)?)\s*m(?:²|2)\b/gi)].map(x=>num(x[1])).filter(x=>x>=5&&x<=10000);
     if(ps.length&&as.length) rows.push({source:portal,type:'Nieruchomość komercyjna',locality:fallback,street:'',price:ps[0],area:as[0],priceM2:ps[0]/as[0],url:href,title:text});
+  }
+  return rows;
+}
+function parseAdresowoListing(html,base,fallback) {
+  const rows=[];
+  const links=[...html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
+  for(const m of links){
+    const href=abs(m[1],base);
+    if(!validOfferUrl(href)||!/^https?:\/\/adresowo\.pl\/o\//i.test(href))continue;
+    const start=Math.max(0,m.index-2200),end=Math.min(html.length,m.index+m[0].length+2200);
+    const chunk=html.slice(start,end).replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;/gi,' ').replace(/\s+/g,' ');
+    const ps=[...chunk.matchAll(/([0-9][0-9 .\u00a0]{2,})\s*zł\b/gi)].map(x=>num(x[1])).filter(Number.isFinite);
+    const as=[...chunk.matchAll(/([0-9]+(?:[.,][0-9]+)?)\s*m(?:²|2)\b/gi)].map(x=>num(x[1])).filter(x=>x>=5&&x<=10000);
+    if(ps.length&&as.length){
+      const text=String(m[2]).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+      rows.push({source:'Adresowo',type:'Nieruchomość komercyjna',locality:fallback,street:'',price:ps[0],area:as[0],priceM2:ps[0]/as[0],url:href,title:text});
+    }
   }
   return rows;
 }
@@ -109,11 +134,13 @@ function unique(rows) {
 function pageUrl(base,page,param){const u=new URL(base);if(page>1)u.searchParams.set(param,String(page));else u.searchParams.delete(param);return u.href;}
 async function fetchPages(base,param,portal,fallback){
   const rows=[]; let pagesFetched=0,totalHtml=0,recognized=0,firstStatus=0;
-  const seenPages=new Set(),seenOffers=new Set(),pages=[];
+  const seenPages=new Set(),seenOffers=new Set(),seenFinalUrls=new Set(),pages=[];
   for(let page=1;page<=MAX_PAGES;page++){
     const url=pageUrl(base,page,param); if(seenPages.has(url))break; seenPages.add(url);
     let r;
     try{r=await fetchHtml(url)}catch(e){pages.push({page,url,httpStatus:0,error:String(e.message||e)});break;}
+    if(seenFinalUrls.has(r.finalUrl||url))break;
+    seenFinalUrls.add(r.finalUrl||url);
     pagesFetched++; if(!firstStatus)firstStatus=r.status; totalHtml+=r.html.length;
     pages.push({page,url:r.finalUrl||url,httpStatus:r.status,htmlLength:r.html.length});
     if(!r.ok)break;
@@ -129,26 +156,27 @@ async function fetchPages(base,param,portal,fallback){
 }
 async function searchAdresowoCommercial(location){
   const base=`https://adresowo.pl/nieruchomosci-komercyjne/${slug(location)}/`;
-  let pageUrl=base,pagesFetched=0,listingUrls=[],seenPages=new Set();
+  let pageUrl=base,pagesFetched=0,listingUrls=[],seenPages=new Set(),listingRows=[];
   while(pageUrl&&pagesFetched<MAX_PAGES&&listingUrls.length<ADRESOWO_MAX_LISTING_URLS){
     if(seenPages.has(pageUrl))break; seenPages.add(pageUrl);
     let r; try{r=await fetchHtml(pageUrl)}catch{break}
     pagesFetched++; if(!r.ok)break;
+    const parsed=parseAdresowoListing(r.html,r.finalUrl||pageUrl,location);
+    listingRows.push(...parsed);
     for(const m of r.html.matchAll(/href=["']([^"']+)["']/gi)){
       if(!/^\/o\//i.test(m[1]))continue;
       const u=abs(m[1],r.finalUrl||pageUrl);
-      if(u&&!listingUrls.includes(u))listingUrls.push(u);
+      if(validOfferUrl(u)&&!listingUrls.includes(u))listingUrls.push(u);
       if(listingUrls.length>=ADRESOWO_MAX_LISTING_URLS)break;
     }
     const next=r.html.match(/href=["']([^"']+)["'][^>]*>\s*(?:Następna|Next)/i);
-    if(next)pageUrl=abs(next[1],r.finalUrl||pageUrl);
-    else {
-      const u=new URL(r.finalUrl||pageUrl); const mm=u.pathname.match(/\/_l(\d+)/); const p=mm?Number(mm[1]):1;
-      if(p>=MAX_PAGES)break;
-      u.pathname=u.pathname.replace(/\/_l\d+/,'')+`_l${p+1}`; pageUrl=u.href;
-    }
+    if(next){
+      const nextUrl=abs(next[1],r.finalUrl||pageUrl);
+      if(!nextUrl||seenPages.has(nextUrl))break;
+      pageUrl=nextUrl;
+    } else break;
   }
-  const rows=[];
+  const rows=[...listingRows];
   for(let i=0;i<listingUrls.length;i+=ADRESOWO_CONCURRENCY){
     const batch=listingUrls.slice(i,i+ADRESOWO_CONCURRENCY);
     const parsed=await Promise.all(batch.map(async u=>{
