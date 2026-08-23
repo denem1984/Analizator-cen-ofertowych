@@ -11,15 +11,8 @@ function slugLocation(location = 'Olsztyn') {
     .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
-function targetUrl(location = 'Olsztyn', areaTarget = 62, tolerance = 10) {
-  const url = new URL(`https://gratka.pl/nieruchomosci/mieszkania/${slugLocation(location)}`);
-  const minArea = areaTarget * (1 - tolerance / 100);
-  const maxArea = areaTarget * (1 + tolerance / 100);
-  if (Number.isFinite(minArea) && Number.isFinite(maxArea)) {
-    url.searchParams.set('powierzchnia-w-m2:max', String(Math.round(maxArea)));
-    url.searchParams.set('powierzchnia-w-m2:min', String(Math.floor(minArea)));
-  }
-  return url.href;
+function targetUrl(location = 'Olsztyn') {
+  return `https://gratka.pl/nieruchomosci/mieszkania/${slugLocation(location)}`;
 }
 
 function pageUrl(baseUrl, page) {
@@ -164,7 +157,10 @@ function dedupe(rows) {
 }
 
 async function searchGratka({ location = 'Olsztyn', areaTarget = 62, tolerance = 10, radius = 0 } = {}) {
-  const sourceUrl = targetUrl(location, areaTarget, tolerance);
+  // Gratka może przekierować paginowane URL-e, gdy filtry powierzchni są
+  // przekazane jako parametry. Dlatego pobieramy pełną listę miasta i filtrujemy
+  // powierzchnię lokalnie. Dzięki temu nie gubimy ofert z dalszych stron.
+  const sourceUrl = targetUrl(location);
   let pagesFetched = 0;
   let totalHtmlLength = 0;
   let totalRecognized = 0;
@@ -211,7 +207,10 @@ async function searchGratka({ location = 'Olsztyn', areaTarget = 62, tolerance =
     complete: complete.length, filtered: filtered.length,
     unique: d.unique.length, duplicates: d.duplicates.length,
     offers: d.unique, requestedRadius: Number(radius) || 0,
-    appliedRadius: 0, radiusSupported: false, pagesFetched, pageStatuses
+    appliedRadius: 0, radiusSupported: false, pagesFetched, pageStatuses,
+    requestedArea: Number(areaTarget) || 0,
+    tolerance: Number(tolerance) || 0,
+    minArea, maxArea
   };
 }
 
@@ -237,7 +236,7 @@ if (require.main === module || process.argv[1] === undefined) {
         return res.end(JSON.stringify(result));
       }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ service: 'Gratka parser v0.6', status: 'ok' }));
+      res.end(JSON.stringify({ service: 'Gratka parser v0.7', status: 'ok' }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
