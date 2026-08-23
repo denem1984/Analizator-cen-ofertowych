@@ -11,8 +11,15 @@ function slugLocation(location = 'Olsztyn') {
     .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
-function targetUrl(location = 'Olsztyn') {
-  return `https://gratka.pl/nieruchomosci/mieszkania/${slugLocation(location)}`;
+function targetUrl(location = 'Olsztyn', areaTarget = 62, tolerance = 10) {
+  const url = new URL(`https://gratka.pl/nieruchomosci/mieszkania/${slugLocation(location)}`);
+  const minArea = areaTarget * (1 - tolerance / 100);
+  const maxArea = areaTarget * (1 + tolerance / 100);
+  if (Number.isFinite(minArea) && Number.isFinite(maxArea)) {
+    url.searchParams.set('powierzchnia-w-m2:max', String(Math.round(maxArea)));
+    url.searchParams.set('powierzchnia-w-m2:min', String(Math.floor(minArea)));
+  }
+  return url.href;
 }
 
 function fetchHtml(url) {
@@ -220,7 +227,9 @@ function nextPageFromHtml(html, baseUrl, currentPage) {
 }
 
 async function searchGratka({ location = 'Olsztyn', areaTarget = 62, tolerance = 10, radius = 0 } = {}) {
-  const sourceUrl = targetUrl(location);
+  // Gratka nie obsługuje promienia. Filtr powierzchni przekazujemy bezpośrednio
+  // do portalu, zachowując dokładny format używany przez jego URL-e.
+  const sourceUrl = targetUrl(location, areaTarget, tolerance);
   let currentUrl = sourceUrl;
   let pagesFetched = 0;
   let totalHtmlLength = 0;
