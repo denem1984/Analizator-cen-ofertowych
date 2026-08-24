@@ -80,7 +80,6 @@ function activeOnlyHtml(html) {
     };
   }
 
-  // Do not use a plain-text search: the phrase can occur in embedded JSON.
   return {
     html: source,
     archiveMarkerFound: false,
@@ -105,19 +104,32 @@ function offerLinks(html, baseUrl) {
   return out;
 }
 
+// Nieruchomości-online does not expose the commercial card data in a stable
+// JSON structure. The link itself is often only one element of the card, while
+// price/area may be rendered before or after it. Therefore parse a bounded
+// context around each offer link instead of slicing from one link to the next.
+function parseCardContext(html, link, minArea, maxArea) {
+  const start = Math.max(0, link.index - 1800);
+  const end = Math.min(html.length, link.index + 3500);
+  return strip(html.slice(start, end));
+}
+
 function parseCardSegment(segment, baseUrl, location, minArea, maxArea, category, link) {
-  const text = strip(segment);
+  const text = String(segment || '');
 
   const priceMatches = [...text.matchAll(/([0-9][0-9\s.,]{2,})\s*(?:zł|PLN)\b/gi)]
     .map(m => num(m[1]))
-    .filter(Number.isFinite);
-  const price = priceMatches.find(p => p >= 1000);
+    .filter(Number.isFinite)
+    .filter(p => p >= 1000);
 
-  // The site uses m&sup2; in the list HTML, not literal m².
-  const areaMatches = [...text.matchAll(/([0-9]+(?:[\s][0-9]{3})*(?:[.,][0-9]+)?)\s*m\s*(?:²|&sup2;|&#178;|&#xB2;|2)\b/gi)]
+  // Prefer an area inside the requested range. This prevents a nearby
+  // unrelated number from being selected when the card contains other data.
+  const areaMatches = [...text.matchAll(/([0-9]+(?:[\s][0-9]{3})*(?:[.,][0-9]+)?)\s*m\s*(?:²|2|kw\.?)(?:\b|$)/gi)]
     .map(m => num(m[1]))
     .filter(Number.isFinite);
+
   const area = areaMatches.find(a => a >= minArea && a <= maxArea);
+  const price = priceMatches[0];
 
   if (!Number.isFinite(price) || !Number.isFinite(area)) return null;
 
@@ -140,12 +152,9 @@ function parseActiveCards(html, baseUrl, location, minArea, maxArea, category) {
   const links = offerLinks(activeHtml, baseUrl);
   const rows = [];
 
-  for (let i = 0; i < links.length; i++) {
-    const current = links[i];
-    const next = links[i + 1];
-    const end = next ? next.index : activeHtml.length;
-    const segment = activeHtml.slice(current.index, end);
-    const row = parseCardSegment(segment, baseUrl, location, minArea, maxArea, category, current);
+  for (const link of links) {
+    const context = parseCardContext(activeHtml, link, minArea, maxArea);
+    const row = parseCardSegment(context, baseUrl, location, minArea, maxArea, category, link);
     if (row) rows.push(row);
   }
 
@@ -237,8 +246,6 @@ async function searchNieruchomosciOnline(location, minArea, maxArea) {
         newOffers
       });
 
-      // Once the archive boundary has been found, this page already contains
-      // all active offers available on that page. Subsequent pages are archive-only.
       if (parsed.archiveMarkerFound) break;
       if (newOffers === 0) break;
     }
