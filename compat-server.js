@@ -1,6 +1,6 @@
 const http=require('http');const fs=require('fs');const path=require('path');const{URL}=require('url');
 const PORT=Number(process.env.PORT)||10000;
-const COMBINED_API_URL=(process.env.COMBINED_API_URL||'https://analizator-cen-ofertowych-v05-combined-final.onrender.com/api/live/combined').replace(/\/$/,'');
+const COMBINED_API_URL=(process.env.COMBINED_API_URL||'https://analizator-cen-ofertowych-v05-combined-m9as.onrender.com/api/live/combined').replace(/\/$/,'');
 function send(res,status,data){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Access-Control-Allow-Headers':'Content-Type'});res.end(JSON.stringify(data));}
 function body(req){return new Promise((resolve,reject)=>{let raw='';req.on('data',c=>{raw+=c;if(raw.length>100000){reject(new Error('Request too large'));req.destroy();}});req.on('end',()=>{try{resolve(raw?JSON.parse(raw):{})}catch(e){reject(new Error('Nieprawidłowy JSON'))}});req.on('error',reject);});}
 function mapPayload(x){return{location:x.location||'Olsztyn',area:Number(x.area||62),tolerance:Number(x.tolerance??10),radius:Number(x.radius||0),propertyType:x.propertyType||'mieszkanie'};}
