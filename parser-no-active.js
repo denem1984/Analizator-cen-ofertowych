@@ -16,7 +16,7 @@ function strip(v) { return String(v || '').replace(/&nbsp;|&#160;/gi, ' ').repla
 function abs(v, b) { try { const u = new URL(String(v).replace(/&amp;/gi, '&'), b); u.hash = ''; return u.href; } catch { return ''; } }
 async function get(url) { const c = new AbortController(); const t = setTimeout(() => c.abort(), TIMEOUT); try { const r = await fetch(url, { redirect:'follow', signal:c.signal, headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36','Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8','Accept-Language':'pl-PL,pl;q=0.9,en;q=0.8'}}); return { status:r.status, finalUrl:r.url, html:await r.text() }; } finally { clearTimeout(t); } }
 
-// Przywrócona detekcja granicy z wersji, która była punktem odniesienia 113 ofert.
+// Aktualne oferty są przed granicą pie_archive. Po niej pomijamy archiwum.
 function activeOnlyHtml(html) {
   const source = String(html || '');
   const markers = [/class=["'][^"']*\bpie_archive\b[^"']*["']/i,/id=["']pie_archive["']/i,/\bpie_archive\b/i];
@@ -27,10 +27,45 @@ function activeOnlyHtml(html) {
 }
 function isOfferUrl(url) { return /nieruchomosci-online\.pl\//i.test(url) && /(?:lokal-uzytkowy|budynek-uzytkowy|lokal-handlowy|lokal-uslugowy|biuro|magazyn|hala)[^?#]*,na-sprzedaz\//i.test(url); }
 function offerLinks(html, baseUrl) { const out=[]; const seen=new Set(); for(const m of html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)){const url=abs(m[1],baseUrl);if(!url||seen.has(url)||!isOfferUrl(url))continue;seen.add(url);out.push({url,label:strip(m[2]),index:m.index});} return out; }
-function parseCardContext(html, link) { return strip(html.slice(Math.max(0,link.index-1800),Math.min(html.length,link.index+3500))); }
-function parseCardSegment(segment, location, minArea, maxArea, category, link) { const text=String(segment||''); const prices=[...text.matchAll(/([0-9][0-9\s.,]{2,})\s*(?:zł|PLN)\b/gi)].map(m=>num(m[1])).filter(Number.isFinite).filter(p=>p>=1000); const areas=[...text.matchAll(/([0-9]+(?:[\s][0-9]{3})*(?:[.,][0-9]+)?)\s*m\s*(?:²|2|kw\.?)(?![A-Za-z0-9])/gi)].map(m=>num(m[1])).filter(Number.isFinite); const area=areas.find(a=>a>=minArea&&a<=maxArea); const price=prices[0]; if(!Number.isFinite(price)||!Number.isFinite(area))return null; return {source:PORTAL,type:category==='budynek-uzytkowy'?'Budynek użytkowy':'Lokal użytkowy',locality:location,street:'',price,area,priceM2:price/area,url:link.url,title:link.label}; }
-function parseActiveCards(html, baseUrl, location, minArea, maxArea, category) { const boundary=activeOnlyHtml(html),activeHtml=boundary.html,links=offerLinks(activeHtml,baseUrl),rows=[]; for(const link of links){const row=parseCardSegment(parseCardContext(activeHtml,link),location,minArea,maxArea,category,link);if(row)rows.push(row);} return {rows,activeHtmlLength:activeHtml.length,archiveMarkerFound:boundary.archiveMarkerFound,archiveMarker:boundary.archiveMarker,offerLinks:links.length}; }
+
+// Zachowujemy ekstrakcję z wersji referencyjnej 113, ale poprawiamy wyłącznie błąd regexu m²:
+// po znaku ² nie stosujemy \b, ponieważ superscript ² nie jest znakiem słowa w JavaScript.
+function parseNO(html, baseUrl, location, minArea, maxArea, category) {
+  const rows = [];
+  for (const link of offerLinks(html, baseUrl)) {
+    const text = strip(html.slice(Math.max(0, link.index - 1500), Math.min(html.length, link.index + 3000)));
+    const price = (text.match(/([0-9][0-9\s.,]{2,})\s*(?:zł|PLN)\b/i) || [])[1];
+    const am = text.match(/([0-9]+(?:[.,][0-9]+)?)\s*m\s*(?:²|2)(?![A-Za-z0-9])/i);
+    const p = num(price);
+    const a = am ? num(am[1]) : null;
+    if (!Number.isFinite(p) || !Number.isFinite(a) || a < minArea || a > maxArea) continue;
+    const title = category === 'budynek-uzytkowy' ? 'Budynek użytkowy' : 'Lokal użytkowy';
+    rows.push({source:PORTAL,type:title,locality:location,street:'',price:p,area:a,priceM2:p/a,url:link.url,title});
+  }
+  return rows;
+}
 function unique(rows) { const u=new Set(),out=[]; for(const r of rows){const key=String(r.url||'').toLowerCase();if(!key||u.has(key))continue;u.add(key);out.push(r);} return out; }
 function pageUrl(base,page){if(page===1)return base;const u=new URL(base);u.searchParams.set('p',String(page));return u.href;}
-async function searchNieruchomosciOnline(location,minArea,maxArea){ if(String(location).toLowerCase()!=='olsztyn')return{portal:PORTAL,httpStatus:0,fetched:false,htmlLength:0,recognized:0,complete:0,offers:[],pagesFetched:0,pages:[],categories:['lokal-uzytkowy','budynek-uzytkowy'],error:'Brak identyfikatora lokalizacji dla tej miejscowości.'}; const categories=['lokal-uzytkowy','budynek-uzytkowy'],rows=[],pages=[]; for(const category of categories){const base=`https://www.nieruchomosci-online.pl/szukaj.html?3,${category},sprzedaz,,Olsztyn:18670,,,,,${Math.floor(minArea)}-${Math.ceil(maxArea)}&q=`; for(let page=1;page<=MAX_PAGES;page++){const url=pageUrl(base,page);let r;try{r=await get(url);}catch(e){pages.push({category,page,url,httpStatus:0,htmlLength:0,activeHtmlLength:0,archiveMarkerFound:false,recognized:0,newOffers:0,error:String(e.message||e)});break;} const finalUrl=r.finalUrl||url;if(r.status<200||r.status>=400){pages.push({category,page,url:finalUrl,httpStatus:r.status,htmlLength:r.html.length,recognized:0,newOffers:0});break;} const parsed=parseActiveCards(r.html,finalUrl,location,minArea,maxArea,category),existing=new Set(rows.map(x=>String(x.url||'').toLowerCase()));let newOffers=0;for(const row of parsed.rows){const key=String(row.url||'').toLowerCase();if(key&&!existing.has(key)){existing.add(key);rows.push(row);newOffers++;}} pages.push({category,page,url:finalUrl,httpStatus:r.status,htmlLength:r.html.length,activeHtmlLength:parsed.activeHtmlLength,archiveMarkerFound:parsed.archiveMarkerFound,archiveMarker:parsed.archiveMarker,offerLinks:parsed.offerLinks,recognized:parsed.rows.length,newOffers}); if(parsed.archiveMarkerFound)break;if(newOffers===0)break; }} const offers=unique(rows); return{portal:PORTAL,httpStatus:pages[0]?.httpStatus||0,fetched:pages.some(p=>p.httpStatus>=200&&p.httpStatus<400),htmlLength:pages.reduce((n,p)=>n+p.htmlLength,0),recognized:rows.length,complete:offers.length,offers,pagesFetched:pages.length,pages,categories,requestedRadius:0,appliedRadius:0,radiusSupported:false}; }
+async function searchNieruchomosciOnline(location,minArea,maxArea){
+  if(String(location).toLowerCase()!=='olsztyn')return{portal:PORTAL,httpStatus:0,fetched:false,htmlLength:0,recognized:0,complete:0,offers:[],pagesFetched:0,pages:[],categories:['lokal-uzytkowy','budynek-uzytkowy'],error:'Brak identyfikatora lokalizacji dla tej miejscowości.'};
+  const categories=['lokal-uzytkowy','budynek-uzytkowy'],rows=[],pages=[];
+  for(const category of categories){
+    const base=`https://www.nieruchomosci-online.pl/szukaj.html?3,${category},sprzedaz,,Olsztyn:18670,,,,,${Math.floor(minArea)}-${Math.ceil(maxArea)}&q=`;
+    for(let page=1;page<=MAX_PAGES;page++){
+      const url=pageUrl(base,page);let r;
+      try{r=await get(url);}catch(e){pages.push({category,page,url,httpStatus:0,htmlLength:0,archiveMarkerFound:false,recognized:0,newOffers:0,error:String(e.message||e)});break;}
+      const finalUrl=r.finalUrl||url;
+      if(r.status<200||r.status>=400){pages.push({category,page,url:finalUrl,httpStatus:r.status,htmlLength:r.html.length,recognized:0,newOffers:0});break;}
+      const boundary=activeOnlyHtml(r.html);
+      const parsed=parseNO(boundary.html,finalUrl,location,minArea,maxArea,category);
+      const existing=new Set(rows.map(x=>String(x.url||'').toLowerCase()));let newOffers=0;
+      for(const row of parsed){const key=String(row.url||'').toLowerCase();if(key&&!existing.has(key)){existing.add(key);rows.push(row);newOffers++;}}
+      pages.push({category,page,url:finalUrl,httpStatus:r.status,htmlLength:r.html.length,activeHtmlLength:boundary.html.length,archiveMarkerFound:boundary.archiveMarkerFound,archiveMarker:boundary.archiveMarker,offerLinks:offerLinks(boundary.html,finalUrl).length,recognized:parsed.length,newOffers});
+      if(boundary.archiveMarkerFound)break;
+      if(newOffers===0)break;
+    }
+  }
+  const offers=unique(rows);
+  return{portal:PORTAL,httpStatus:pages[0]?.httpStatus||0,fetched:pages.some(p=>p.httpStatus>=200&&p.httpStatus<400),htmlLength:pages.reduce((n,p)=>n+p.htmlLength,0),recognized:rows.length,complete:offers.length,offers,pagesFetched:pages.length,pages,categories,requestedRadius:0,appliedRadius:0,radiusSupported:false};
+}
 module.exports={searchNieruchomosciOnline};
