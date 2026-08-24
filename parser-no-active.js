@@ -57,34 +57,17 @@ async function get(url) {
   }
 }
 
-// On Nieruchomości-online the visible archive section starts at the structural
-// heading <h2 id="pie_archive">Ogłoszenia archiwalne</h2>.
-// Everything before that heading is the active-result section.
 function activeOnlyHtml(html) {
   const source = String(html || '');
   const marker = /<h2\b[^>]*\bid\s*=\s*["']pie_archive["'][^>]*>/i.exec(source);
   if (marker) {
-    return {
-      html: source.slice(0, marker.index),
-      archiveMarkerFound: true,
-      archiveMarker: 'pie_archive'
-    };
+    return { html: source.slice(0, marker.index), archiveMarkerFound: true, archiveMarker: 'pie_archive' };
   }
-
   const heading = /<h[1-6]\b[^>]*>[\s\S]{0,500}?<span[^>]*>\s*Ogłoszenia\s+archiwalne\s*<\/span>[\s\S]{0,100}?<\/h[1-6]>/i.exec(source);
   if (heading) {
-    return {
-      html: source.slice(0, heading.index),
-      archiveMarkerFound: true,
-      archiveMarker: 'visible-heading'
-    };
+    return { html: source.slice(0, heading.index), archiveMarkerFound: true, archiveMarker: 'visible-heading' };
   }
-
-  return {
-    html: source,
-    archiveMarkerFound: false,
-    archiveMarker: null
-  };
+  return { html: source, archiveMarkerFound: false, archiveMarker: null };
 }
 
 function isOfferUrl(url) {
@@ -104,11 +87,7 @@ function offerLinks(html, baseUrl) {
   return out;
 }
 
-// Nieruchomości-online does not expose the commercial card data in a stable
-// JSON structure. The link itself is often only one element of the card, while
-// price/area may be rendered before or after it. Therefore parse a bounded
-// context around each offer link instead of slicing from one link to the next.
-function parseCardContext(html, link, minArea, maxArea) {
+function parseCardContext(html, link) {
   const start = Math.max(0, link.index - 1800);
   const end = Math.min(html.length, link.index + 3500);
   return strip(html.slice(start, end));
@@ -116,21 +95,19 @@ function parseCardContext(html, link, minArea, maxArea) {
 
 function parseCardSegment(segment, baseUrl, location, minArea, maxArea, category, link) {
   const text = String(segment || '');
-
   const priceMatches = [...text.matchAll(/([0-9][0-9\s.,]{2,})\s*(?:zł|PLN)\b/gi)]
     .map(m => num(m[1]))
     .filter(Number.isFinite)
     .filter(p => p >= 1000);
 
-  // Prefer an area inside the requested range. This prevents a nearby
-  // unrelated number from being selected when the card contains other data.
-  const areaMatches = [...text.matchAll(/([0-9]+(?:[\s][0-9]{3})*(?:[.,][0-9]+)?)\s*m\s*(?:²|2|kw\.?)(?:\b|$)/gi)]
+  // Do not use \b after ²: Unicode superscript ² is not a JS \w character,
+  // so a word-boundary test can fail for the normal "m²" representation.
+  const areaMatches = [...text.matchAll(/([0-9]+(?:[\s][0-9]{3})*(?:[.,][0-9]+)?)\s*m\s*(?:²|2|kw\.?)(?![A-Za-z0-9])/gi)]
     .map(m => num(m[1]))
     .filter(Number.isFinite);
 
   const area = areaMatches.find(a => a >= minArea && a <= maxArea);
   const price = priceMatches[0];
-
   if (!Number.isFinite(price) || !Number.isFinite(area)) return null;
 
   return {
@@ -151,13 +128,11 @@ function parseActiveCards(html, baseUrl, location, minArea, maxArea, category) {
   const activeHtml = boundary.html;
   const links = offerLinks(activeHtml, baseUrl);
   const rows = [];
-
   for (const link of links) {
-    const context = parseCardContext(activeHtml, link, minArea, maxArea);
+    const context = parseCardContext(activeHtml, link);
     const row = parseCardSegment(context, baseUrl, location, minArea, maxArea, category, link);
     if (row) rows.push(row);
   }
-
   return {
     rows,
     activeHtmlLength: activeHtml.length,
@@ -209,7 +184,6 @@ async function searchNieruchomosciOnline(location, minArea, maxArea) {
 
   for (const category of categories) {
     const base = `https://www.nieruchomosci-online.pl/szukaj.html?3,${category},sprzedaz,,Olsztyn:18670,,,,,${Math.floor(minArea)}-${Math.ceil(maxArea)}&q=`;
-
     for (let page = 1; page <= MAX_PAGES; page++) {
       const url = pageUrl(base, page);
       let r;
