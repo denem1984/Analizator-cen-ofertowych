@@ -64,15 +64,14 @@ function offerLinks(html, baseUrl) {
 function parseNO(html, baseUrl, location, minArea, maxArea, category) {
   const rows = [];
   for (const link of offerLinks(html, baseUrl)) {
-    const text = strip(html.slice(Math.max(0, link.index - 1200), Math.min(html.length, link.index + 3200)));
-    // Nie pobieramy ceny jednostkowej z fragmentu typu „5 731,43 zł/m²”.
-    const money = [...text.matchAll(/([0-9][0-9\s.,]{2,})\s*(?:zł|PLN)(?!\s*\/\s*m)/gi)];
-    const areas = [...text.matchAll(/([0-9]+(?:[.,][0-9]+)?)\s*m\s*(?:²|2)\b/gi)];
-    const price = money.length ? num(money[0][1]) : null;
-    const area = areas.length ? num(areas[0][1]) : null;
-    if (!Number.isFinite(price) || !Number.isFinite(area) || area < minArea || area > maxArea) continue;
+    const text = strip(html.slice(Math.max(0, link.index - 1500), Math.min(html.length, link.index + 3000)));
+    const price = (text.match(/([0-9][0-9\s.,]{2,})\s*(?:zł|PLN)\b/i) || [])[1];
+    const am = text.match(/([0-9]+(?:[.,][0-9]+)?)\s*m\s*(?:²|2)\b/i);
+    const p = num(price);
+    const a = am ? num(am[1]) : null;
+    if (!Number.isFinite(p) || !Number.isFinite(a) || a < minArea || a > maxArea) continue;
     const title = category === 'budynek-uzytkowy' ? 'Budynek użytkowy' : 'Lokal użytkowy';
-    rows.push({ source: PORTAL, type: title, locality: location, street: '', price, area, priceM2: price / area, url: link.url, title });
+    rows.push({ source: PORTAL, type: title, locality: location, street: '', price: p, area: a, priceM2: p / a, url: link.url, title });
   }
   return rows;
 }
@@ -84,16 +83,91 @@ function pageUrl(baseUrl, page) {
   return u.href;
 }
 
+function archiveCutoff(html) {
+  const markers = [
+    /class=["'][^"']*\bpie_archive\b[^"']*["']/i,
+    /\bid=["']pie_archive["']/i,
+    /\bpie_archive\b/i
+  ];
+  for (const re of markers) {
+    const m = re.exec(html);
+    if (m && Number.isFinite(m.index)) return m.index;
+  }
+  return -1;
+}
+
 function unique(rows) {
   const seenUrl = new Set();
+  const seenData = new Set();
   const out = [];
   for (const row of rows) {
     const url = String(row.url || '').toLowerCase();
-    if (url && seenUrl.has(url)) continue;
+    const data = `${row.price}|${row.area}`;
+    if ((url && seenUrl.has(url)) || seenData.has(data)) continue;
     if (url) seenUrl.add(url);
+    seenData.add(data);
     out.push(row);
   }
   return out;
+}
+
+async function fetchNOCategory(baseUrl, location, minArea, maxArea, category) {
+  const rows = [];
+  const pages = [];
+  const seenOffers = new Set();
+
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const url = pageUrl(baseUrl, page);
+    let result;
+    try {
+      result = await get(url);
+    } catch (e) {
+      pages.push({ category, page, url, httpStatus: 0, htmlLength: 0, activeHtmlLength: 0, archiveMarkerFound: false, recognized: 0, newOffers: 0, error: String(e.message || e) });
+      break;
+    }
+
+    const finalUrl = result.finalUrl || url;
+    if (result.status < 200 || result.status >= 400) {
+      pages.push({ category, page, url: finalUrl, httpStatus: result.status, htmlLength: result.html.length, activeHtmlLength: 0, archiveMarkerFound: false, recognized: 0, newOffers: 0 });
+      break;
+    }
+
+    const cutoff = archiveCutoff(result.html);
+    const archiveMarkerFound = cutoff >= 0;
+    const activeHtml = archiveMarkerFound ? result.html.slice(0, cutoff) : result.html;
+    const parsed = parseNO(activeHtml, finalUrl, location, minArea, maxArea, category);
+
+    let newOffers = 0;
+    for (const row of parsed) {
+      const key = String(row.url || `${row.price}|${row.area}`).toLowerCase();
+      if (seenOffers.has(key)) continue;
+      seenOffers.add(key);
+      rows.push(row);
+      newOffers++;
+    }
+
+    pages.push({
+      category,
+      page,
+      url: finalUrl,
+      httpStatus: result.status,
+      htmlLength: result.html.length,
+      activeHtmlLength: activeHtml.length,
+      archiveMarkerFound,
+      archiveMarker: archiveMarkerFound ? 'pie_archive' : null,
+      archiveCutoff: archiveMarkerFound ? cutoff : null,
+      offerLinks: offerLinks(activeHtml, finalUrl).length,
+      recognized: parsed.length,
+      newOffers
+    });
+
+    // Najważniejsza zasada: po wejściu w sekcję „Ogłoszenia archiwalne”
+    // nie pobieramy żadnej kolejnej strony. Kolejne strony są już archiwum.
+    if (archiveMarkerFound) break;
+    if (newOffers === 0) break;
+  }
+
+  return { rows, pages };
 }
 
 async function searchNieruchomosciOnline(location, minArea, maxArea) {
@@ -103,44 +177,21 @@ async function searchNieruchomosciOnline(location, minArea, maxArea) {
       recognized: 0, complete: 0, offers: [], pagesFetched: 0, pages: [],
       categories: ['lokal-uzytkowy', 'budynek-uzytkowy'], requestedRadius: 0,
       appliedRadius: 0, radiusSupported: false,
-      error: 'Parser N-O v08 obsługuje obecnie lokalizację Olsztyn.'
+      error: 'Parser N-O obsługuje obecnie lokalizację Olsztyn.'
     };
   }
 
-  // Aktualne adresy kategorii N-O. Poprzednia wersja używała starego
-  // endpointu /szukaj.html, który nie zwracał właściwej listy ofert.
-  const categories = [
-    { key: 'lokal-uzytkowy', url: 'https://olsztyn.nieruchomosci-online.pl/lokale-uzytkowe,sprzedaz/' },
-    { key: 'budynek-uzytkowy', url: 'https://olsztyn.nieruchomosci-online.pl/budynki-uzytkowe,sprzedaz/' }
-  ];
+  // Zachowujemy stary, działający adres wyszukiwania, który wcześniej
+  // zwracał 113 rozpoznanych ofert. Zmieniamy wyłącznie odcięcie archiwum.
+  const categories = ['lokal-uzytkowy', 'budynek-uzytkowy'];
   const rows = [];
   const pages = [];
 
   for (const category of categories) {
-    let previousUrls = new Set();
-    for (let page = 1; page <= MAX_PAGES; page++) {
-      const url = pageUrl(category.url, page);
-      let result;
-      try {
-        result = await get(url);
-      } catch (e) {
-        pages.push({ category: category.key, page, url, httpStatus: 0, htmlLength: 0, recognized: 0, newOffers: 0, error: String(e.message || e) });
-        break;
-      }
-      const finalUrl = result.finalUrl || url;
-      if (result.status < 200 || result.status >= 400) {
-        pages.push({ category: category.key, page, url: finalUrl, httpStatus: result.status, htmlLength: result.html.length, recognized: 0, newOffers: 0 });
-        break;
-      }
-
-      const parsed = parseNO(result.html, finalUrl, location, minArea, maxArea, category.key);
-      const currentUrls = new Set(offerLinks(result.html, finalUrl).map(x => x.url.toLowerCase()));
-      const newPageUrls = [...currentUrls].filter(u => !previousUrls.has(u));
-      rows.push(...parsed);
-      pages.push({ category: category.key, page, url: finalUrl, httpStatus: result.status, htmlLength: result.html.length, recognized: parsed.length, newOffers: newPageUrls.length });
-      previousUrls = currentUrls;
-      if (newPageUrls.length === 0 || currentUrls.size === 0) break;
-    }
+    const url = `https://www.nieruchomosci-online.pl/szukaj.html?3,${category},sprzedaz,,Olsztyn:18670,,,,,${Math.floor(minArea)}-${Math.ceil(maxArea)}&q=`;
+    const result = await fetchNOCategory(url, location, minArea, maxArea, category);
+    rows.push(...result.rows);
+    pages.push(...result.pages);
   }
 
   const offers = unique(rows);
@@ -154,7 +205,7 @@ async function searchNieruchomosciOnline(location, minArea, maxArea) {
     offers,
     pagesFetched: pages.length,
     pages,
-    categories: categories.map(c => c.key),
+    categories,
     requestedRadius: 0,
     appliedRadius: 0,
     radiusSupported: false
