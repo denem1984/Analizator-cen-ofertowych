@@ -18,12 +18,10 @@ function num(v) {
 function strip(v) {
   return String(v || '')
     .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&sup2;|&#178;|&#xB2;/gi, '²')
     .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&sup2;|&#178;|&#xB2;/gi, '²')
-    .replace(/&ndash;|&#8211;/gi, '–')
-    .replace(/&mdash;|&#8212;/gi, '—')
     .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
@@ -59,27 +57,18 @@ async function get(url) {
   }
 }
 
-// Nieruchomości-online puts all active results first. The visible
-// <h2 id="pie_archive">Ogłoszenia archiwalne</h2> is the boundary.
-// Once this marker is reached on a page, all later listings are archived;
-// there is no reason to request further pagination pages.
+// On Nieruchomości-online the visible archive section starts at the structural
+// heading <h2 id="pie_archive">Ogłoszenia archiwalne</h2>.
+// Everything before that heading is the active-result section.
 function activeOnlyHtml(html) {
   const source = String(html || '');
-  const markerPatterns = [
-    /<h2\b[^>]*\bid\s*=\s*["']pie_archive["'][^>]*>/i,
-    /<h2\b[^>]*id\s*=\s*["']pie_archive["'][^>]*>/i,
-    /id\s*=\s*["']pie_archive["'][^>]*>/i
-  ];
-
-  for (const re of markerPatterns) {
-    const m = re.exec(source);
-    if (m) {
-      return {
-        html: source.slice(0, m.index),
-        archiveMarkerFound: true,
-        archiveMarker: 'pie_archive'
-      };
-    }
+  const marker = /<h2\b[^>]*\bid\s*=\s*["']pie_archive["'][^>]*>/i.exec(source);
+  if (marker) {
+    return {
+      html: source.slice(0, marker.index),
+      archiveMarkerFound: true,
+      archiveMarker: 'pie_archive'
+    };
   }
 
   const heading = /<h[1-6]\b[^>]*>[\s\S]{0,500}?<span[^>]*>\s*Ogłoszenia\s+archiwalne\s*<\/span>[\s\S]{0,100}?<\/h[1-6]>/i.exec(source);
@@ -91,7 +80,12 @@ function activeOnlyHtml(html) {
     };
   }
 
-  return { html: source, archiveMarkerFound: false, archiveMarker: null };
+  // Do not use a plain-text search: the phrase can occur in embedded JSON.
+  return {
+    html: source,
+    archiveMarkerFound: false,
+    archiveMarker: null
+  };
 }
 
 function isOfferUrl(url) {
@@ -119,9 +113,8 @@ function parseCardSegment(segment, baseUrl, location, minArea, maxArea, category
     .filter(Number.isFinite);
   const price = priceMatches.find(p => p >= 1000);
 
-  // N-O uses several HTML entity forms for square metre: m², m&sup2;, m&#178;.
-  // strip() normalizes those before this regex runs.
-  const areaMatches = [...text.matchAll(/([0-9]+(?:[\s][0-9]{3})*(?:[.,][0-9]+)?)\s*m\s*(?:²|2)\b/gi)]
+  // The site uses m&sup2; in the list HTML, not literal m².
+  const areaMatches = [...text.matchAll(/([0-9]+(?:[\s][0-9]{3})*(?:[.,][0-9]+)?)\s*m\s*(?:²|&sup2;|&#178;|&#xB2;|2)\b/gi)]
     .map(m => num(m[1]))
     .filter(Number.isFinite);
   const area = areaMatches.find(a => a >= minArea && a <= maxArea);
@@ -244,8 +237,8 @@ async function searchNieruchomosciOnline(location, minArea, maxArea) {
         newOffers
       });
 
-      // Once the archive boundary exists on this page, later pages are only
-      // continuation of the archived section. Stop pagination immediately.
+      // Once the archive boundary has been found, this page already contains
+      // all active offers available on that page. Subsequent pages are archive-only.
       if (parsed.archiveMarkerFound) break;
       if (newOffers === 0) break;
     }
