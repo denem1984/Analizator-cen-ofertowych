@@ -1,6 +1,8 @@
 const base = require('./parser-commercial-v01');
 const { searchNieruchomosciOnline } = require('./parser-no-active');
-const PORTAL = 'Nieruchomości-online';
+const { search: searchAdresowo } = require('./parser-adresowo-v05');
+const PORTAL_NO = 'Nieruchomości-online';
+const PORTAL_ADRESOWO = 'Adresowo';
 
 async function searchCommercial(options = {}) {
   const result = await base.searchCommercial(options);
@@ -9,10 +11,20 @@ async function searchCommercial(options = {}) {
   const minArea = area * (1 - tolerance / 100);
   const maxArea = area * (1 + tolerance / 100);
   const location = options.location || 'Olsztyn';
+  const radius = Number(options.radius) || 0;
+
   const fixedNO = await searchNieruchomosciOnline(location, minArea, maxArea);
-  return result.map(item => item.portal === PORTAL
-    ? { ...fixedNO, requestedRadius: Number(options.radius) || 0, appliedRadius: 0, radiusSupported: false }
-    : item);
+  const fixedAdresowo = await searchAdresowo({ location, areaTarget: area, tolerance, radius });
+
+  return result.map(item => {
+    if (item.portal === PORTAL_NO) {
+      return { ...fixedNO, requestedRadius: radius, appliedRadius: 0, radiusSupported: false };
+    }
+    if (item.portal === PORTAL_ADRESOWO) {
+      return { ...fixedAdresowo, requestedRadius: radius };
+    }
+    return item;
+  });
 }
 
 module.exports = { searchCommercial };
