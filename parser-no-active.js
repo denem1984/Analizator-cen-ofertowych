@@ -56,22 +56,51 @@ async function get(url) {
   }
 }
 
+// Nieruchomości-online has a reliable structural boundary in the rendered HTML:
+// <h2 id="pie_archive">Ogłoszenia archiwalne</h2>
+// Everything before this heading belongs to the active-result section.
+// Do NOT search for the first plain text occurrence of "Ogłoszenia archiwalne",
+// because the same phrase also occurs in embedded JSON/JavaScript data before the
+// visible archive heading and that caused the previous version to cut the page too early.
 function activeOnlyHtml(html) {
   const source = String(html || '');
-  const patterns = [
-    /<(?:h[1-6]|div|section|p)[^>]*>[\s\S]{0,300}?Ogłoszenia\s+archiwalne[\s\S]{0,300}?<\//i,
-    /<(?:h[1-6]|div|section|p)[^>]*>[\s\S]{0,300}?Oferty\s+archiwalne[\s\S]{0,300}?<\//i
-  ];
-  let cut = -1;
-  for (const re of patterns) {
-    const m = re.exec(source);
-    if (m && (cut < 0 || m.index < cut)) cut = m.index;
-  }
-  if (cut >= 0) return source.slice(0, cut);
 
-  // Fallback only when the portal does not wrap the archive heading in a normal element.
-  const plain = /Ogłoszenia\s+archiwalne|Oferty\s+archiwalne/i.exec(source);
-  return plain ? source.slice(0, plain.index) : source;
+  const markerPatterns = [
+    /<h2\b[^>]*\bid\s*=\s*["']pie_archive["'][^>]*>/i,
+    /<h2\b[^>]*id\s*=\s*["']pie_archive["'][^>]*>/i,
+    /id\s*=\s*["']pie_archive["'][^>]*>/i
+  ];
+
+  for (const re of markerPatterns) {
+    const m = re.exec(source);
+    if (m) {
+      return {
+        html: source.slice(0, m.index),
+        archiveMarkerFound: true,
+        archiveMarker: 'pie_archive'
+      };
+    }
+  }
+
+  // Secondary structural fallback: find a visible heading containing the exact
+  // archive label. This is deliberately limited to an h1-h6 element and is only
+  // used if the stable id is absent.
+  const heading = /<h[1-6]\b[^>]*>[\s\S]{0,500}?<span[^>]*>\s*Ogłoszenia\s+archiwalne\s*<\/span>[\s\S]{0,100}?<\/h[1-6]>/i.exec(source);
+  if (heading) {
+    return {
+      html: source.slice(0, heading.index),
+      archiveMarkerFound: true,
+      archiveMarker: 'visible-heading'
+    };
+  }
+
+  // Never fall back to a plain-text search: it can match embedded JSON and
+  // silently remove all active offers. Keep the page intact instead.
+  return {
+    html: source,
+    archiveMarkerFound: false,
+    archiveMarker: null
+  };
 }
 
 function isOfferUrl(url) {
@@ -94,13 +123,11 @@ function offerLinks(html, baseUrl) {
 function parseCardSegment(segment, baseUrl, location, minArea, maxArea, category, link) {
   const text = strip(segment);
 
-  // The first price in an active offer card is the total asking price.
   const priceMatches = [...text.matchAll(/([0-9][0-9\s.,]{2,})\s*(?:zł|PLN)\b/gi)]
     .map(m => num(m[1]))
     .filter(Number.isFinite);
   const price = priceMatches.find(p => p >= 1000);
 
-  // The portal card exposes the advertised property area as a number followed by m².
   const areaMatches = [...text.matchAll(/([0-9]+(?:[\s][0-9]{3})*(?:[.,][0-9]+)?)\s*m\s*(?:²|2)\b/gi)]
     .map(m => num(m[1]))
     .filter(Number.isFinite);
@@ -122,7 +149,8 @@ function parseCardSegment(segment, baseUrl, location, minArea, maxArea, category
 }
 
 function parseActiveCards(html, baseUrl, location, minArea, maxArea, category) {
-  const activeHtml = activeOnlyHtml(html);
+  const boundary = activeOnlyHtml(html);
+  const activeHtml = boundary.html;
   const links = offerLinks(activeHtml, baseUrl);
   const rows = [];
 
@@ -138,7 +166,8 @@ function parseActiveCards(html, baseUrl, location, minArea, maxArea, category) {
   return {
     rows,
     activeHtmlLength: activeHtml.length,
-    archiveMarkerFound: activeHtml.length < String(html || '').length,
+    archiveMarkerFound: boundary.archiveMarkerFound,
+    archiveMarker: boundary.archiveMarker,
     offerLinks: links.length
   };
 }
@@ -216,6 +245,7 @@ async function searchNieruchomosciOnline(location, minArea, maxArea) {
         htmlLength: r.html.length,
         activeHtmlLength: parsed.activeHtmlLength,
         archiveMarkerFound: parsed.archiveMarkerFound,
+        archiveMarker: parsed.archiveMarker,
         offerLinks: parsed.offerLinks,
         recognized: parsed.rows.length,
         newOffers
