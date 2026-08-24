@@ -57,17 +57,37 @@ async function get(url) {
   }
 }
 
-function activeOnlyHtml(html) {
+function archiveBoundary(html) {
   const source = String(html || '');
-  const marker = /<h2\b[^>]*\bid\s*=\s*["']pie_archive["'][^>]*>/i.exec(source);
-  if (marker) {
-    return { html: source.slice(0, marker.index), archiveMarkerFound: true, archiveMarker: 'pie_archive' };
+  const markers = [
+    /class=["'][^"']*\bpie_archive\b[^"']*["']/i,
+    /id=["']pie_archive["']/i,
+    /\bpie_archive\b/i
+  ];
+
+  for (const re of markers) {
+    const m = re.exec(source);
+    if (m && Number.isFinite(m.index)) {
+      return {
+        html: source.slice(0, m.index),
+        archiveMarkerFound: true,
+        archiveMarker: 'pie_archive',
+        archiveCutoff: m.index
+      };
+    }
   }
-  const heading = /<h[1-6]\b[^>]*>[\s\S]{0,500}?<span[^>]*>\s*Ogłoszenia\s+archiwalne\s*<\/span>[\s\S]{0,100}?<\/h[1-6]>/i.exec(source);
-  if (heading) {
-    return { html: source.slice(0, heading.index), archiveMarkerFound: true, archiveMarker: 'visible-heading' };
+
+  const visible = /Ogłoszenia\s+archiwalne/i.exec(source);
+  if (visible && Number.isFinite(visible.index)) {
+    return {
+      html: source.slice(0, visible.index),
+      archiveMarkerFound: true,
+      archiveMarker: 'Ogłoszenia archiwalne',
+      archiveCutoff: visible.index
+    };
   }
-  return { html: source, archiveMarkerFound: false, archiveMarker: null };
+
+  return { html: source, archiveMarkerFound: false, archiveMarker: null, archiveCutoff: null };
 }
 
 function isOfferUrl(url) {
@@ -82,73 +102,48 @@ function offerLinks(html, baseUrl) {
     const url = abs(m[1], baseUrl);
     if (!url || seen.has(url) || !isOfferUrl(url)) continue;
     seen.add(url);
-    out.push({ url, label: strip(m[2]), index: m.index, end: m.index + m[0].length });
+    out.push({ url, label: strip(m[2]), index: m.index });
   }
   return out;
 }
 
-function parseCardContext(html, link) {
-  const start = Math.max(0, link.index - 1800);
-  const end = Math.min(html.length, link.index + 3500);
-  return strip(html.slice(start, end));
-}
-
-function parseCardSegment(segment, baseUrl, location, minArea, maxArea, category, link) {
-  const text = String(segment || '');
-  const priceMatches = [...text.matchAll(/([0-9][0-9\s.,]{2,})\s*(?:zł|PLN)\b/gi)]
-    .map(m => num(m[1]))
-    .filter(Number.isFinite)
-    .filter(p => p >= 1000);
-
-  // Do not use \b after ²: Unicode superscript ² is not a JS \w character,
-  // so a word-boundary test can fail for the normal "m²" representation.
-  const areaMatches = [...text.matchAll(/([0-9]+(?:[\s][0-9]{3})*(?:[.,][0-9]+)?)\s*m\s*(?:²|2|kw\.?)(?![A-Za-z0-9])/gi)]
-    .map(m => num(m[1]))
-    .filter(Number.isFinite);
-
-  const area = areaMatches.find(a => a >= minArea && a <= maxArea);
-  const price = priceMatches[0];
-  if (!Number.isFinite(price) || !Number.isFinite(area)) return null;
-
-  return {
-    source: PORTAL,
-    type: category === 'budynek-uzytkowy' ? 'Budynek użytkowy' : 'Lokal użytkowy',
-    locality: location,
-    street: '',
-    price,
-    area,
-    priceM2: price / area,
-    url: link.url,
-    title: link.label
-  };
-}
-
-function parseActiveCards(html, baseUrl, location, minArea, maxArea, category) {
-  const boundary = activeOnlyHtml(html);
-  const activeHtml = boundary.html;
-  const links = offerLinks(activeHtml, baseUrl);
+// To jest logika ekstrakcji z wersji, która wcześniej poprawnie
+// rozpoznawała 113 ofert N-O. Nie zmieniamy jej na nowy parser kart.
+function parseNO(html, baseUrl, location, minArea, maxArea, category) {
   const rows = [];
-  for (const link of links) {
-    const context = parseCardContext(activeHtml, link);
-    const row = parseCardSegment(context, baseUrl, location, minArea, maxArea, category, link);
-    if (row) rows.push(row);
+  for (const link of offerLinks(html, baseUrl)) {
+    const text = strip(html.slice(Math.max(0, link.index - 1500), Math.min(html.length, link.index + 3000)));
+    const price = (text.match(/([0-9][0-9\s.,]{2,})\s*(?:zł|PLN)\b/i) || [])[1];
+    const am = text.match(/([0-9]+(?:[.,][0-9]+)?)\s*m\s*(?:²|2)\b/i);
+    const p = num(price);
+    const a = am ? num(am[1]) : null;
+    if (!Number.isFinite(p) || !Number.isFinite(a) || a < minArea || a > maxArea) continue;
+    const title = category === 'budynek-uzytkowy' ? 'Budynek użytkowy' : 'Lokal użytkowy';
+    rows.push({
+      source: PORTAL,
+      type: title,
+      locality: location,
+      street: '',
+      price: p,
+      area: a,
+      priceM2: p / a,
+      url: link.url,
+      title
+    });
   }
-  return {
-    rows,
-    activeHtmlLength: activeHtml.length,
-    archiveMarkerFound: boundary.archiveMarkerFound,
-    archiveMarker: boundary.archiveMarker,
-    offerLinks: links.length
-  };
+  return rows;
 }
 
 function unique(rows) {
   const u = new Set();
+  const data = new Set();
   const out = [];
   for (const r of rows) {
-    const key = String(r.url || '').toLowerCase();
-    if (!key || u.has(key)) continue;
-    u.add(key);
+    const url = String(r.url || '').toLowerCase();
+    const key = `${r.price}|${r.area}`;
+    if ((url && u.has(url)) || data.has(key)) continue;
+    if (url) u.add(url);
+    data.add(key);
     out.push(r);
   }
   return out;
@@ -184,27 +179,38 @@ async function searchNieruchomosciOnline(location, minArea, maxArea) {
 
   for (const category of categories) {
     const base = `https://www.nieruchomosci-online.pl/szukaj.html?3,${category},sprzedaz,,Olsztyn:18670,,,,,${Math.floor(minArea)}-${Math.ceil(maxArea)}&q=`;
+
     for (let page = 1; page <= MAX_PAGES; page++) {
       const url = pageUrl(base, page);
       let r;
       try {
         r = await get(url);
       } catch (e) {
-        pages.push({ category, page, url, httpStatus: 0, htmlLength: 0, recognized: 0, newOffers: 0, error: String(e.message || e) });
+        pages.push({ category, page, url, httpStatus: 0, htmlLength: 0, activeHtmlLength: 0, archiveMarkerFound: false, recognized: 0, newOffers: 0, error: String(e.message || e) });
         break;
       }
 
       const finalUrl = r.finalUrl || url;
       if (r.status < 200 || r.status >= 400) {
-        pages.push({ category, page, url: finalUrl, httpStatus: r.status, htmlLength: r.html.length, recognized: 0, newOffers: 0 });
+        pages.push({ category, page, url: finalUrl, httpStatus: r.status, htmlLength: r.html.length, activeHtmlLength: 0, archiveMarkerFound: false, recognized: 0, newOffers: 0 });
         break;
       }
 
-      const parsed = parseActiveCards(r.html, finalUrl, location, minArea, maxArea, category);
-      const before = rows.length;
-      rows.push(...parsed.rows);
-      const seenBefore = new Set(rows.slice(0, before).map(x => String(x.url || '').toLowerCase()));
-      const newOffers = parsed.rows.filter(x => !seenBefore.has(String(x.url || '').toLowerCase())).length;
+      // Kluczowa zmiana: najpierw odcinamy cały fragment archiwalny,
+      // dopiero potem szukamy ofert. Jeśli marker jest na tej stronie,
+      // kończymy pobieranie kategorii — kolejne strony są archiwum.
+      const boundary = archiveBoundary(r.html);
+      const parsed = parseNO(boundary.html, finalUrl, location, minArea, maxArea, category);
+
+      const existing = new Set(rows.map(x => String(x.url || '').toLowerCase()));
+      let newOffers = 0;
+      for (const row of parsed) {
+        const key = String(row.url || '').toLowerCase();
+        if (!key || existing.has(key)) continue;
+        existing.add(key);
+        rows.push(row);
+        newOffers++;
+      }
 
       pages.push({
         category,
@@ -212,15 +218,16 @@ async function searchNieruchomosciOnline(location, minArea, maxArea) {
         url: finalUrl,
         httpStatus: r.status,
         htmlLength: r.html.length,
-        activeHtmlLength: parsed.activeHtmlLength,
-        archiveMarkerFound: parsed.archiveMarkerFound,
-        archiveMarker: parsed.archiveMarker,
-        offerLinks: parsed.offerLinks,
-        recognized: parsed.rows.length,
+        activeHtmlLength: boundary.html.length,
+        archiveMarkerFound: boundary.archiveMarkerFound,
+        archiveMarker: boundary.archiveMarker,
+        archiveCutoff: boundary.archiveCutoff,
+        offerLinks: offerLinks(boundary.html, finalUrl).length,
+        recognized: parsed.length,
         newOffers
       });
 
-      if (parsed.archiveMarkerFound) break;
+      if (boundary.archiveMarkerFound) break;
       if (newOffers === 0) break;
     }
   }
