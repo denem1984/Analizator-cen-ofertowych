@@ -1,4 +1,4 @@
-const http=require('http');const fs=require('fs');const path=require('path');const{URL}=require('url');
+const http=require('http');const{URL}=require('url');
 const PORT=Number(process.env.PORT)||10000;
 const COMBINED_API_URL=(process.env.COMBINED_API_URL||'https://analizator-cen-ofertowych-v05-combined-m9as.onrender.com/api/live/combined').replace(/\/$/,'');
 function send(res,status,data){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Access-Control-Allow-Headers':'Content-Type','Cache-Control':'no-store'});res.end(JSON.stringify(data));}
