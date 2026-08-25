@@ -1,7 +1,7 @@
 const https=require('https');const {URL}=require('url');
 const MAX_PAGES=50;const FETCH_TIMEOUT_MS=30000;
 function slugLocation(location='Olsztyn'){return String(location).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');}
-function targetUrl(location='Olsztyn'){return `https://gratka.pl/nieruchomosci/dzialki/${slugLocation(location)}`;}
+function targetUrl(location='Olsztyn'){return `https://gratka.pl/nieruchomosci/dzialki-grunty/${slugLocation(location)}`;}
 function pageUrl(base,page){const u=new URL(base);if(page<=1)u.searchParams.delete('page');else u.searchParams.set('page',String(page));return u.href;}
 function fetchHtml(url){return new Promise((resolve,reject)=>{const req=https.get(url,{headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36','Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8','Accept-Language':'pl-PL,pl;q=0.9,en;q=0.8'}},res=>{let html='';res.setEncoding('utf8');res.on('data',c=>html+=c);res.on('end',()=>resolve({status:res.statusCode,html,finalUrl:res.headers.location?new URL(res.headers.location,url).href:url}));});req.on('error',reject);req.setTimeout(FETCH_TIMEOUT_MS,()=>req.destroy(new Error('timeout')));});}
 function jsonLd(html){const out=[];for(const m of html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)){try{out.push(JSON.parse(m[1].trim()))}catch(_){}}return out;}
