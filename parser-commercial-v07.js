@@ -6,6 +6,45 @@ const PORTAL_NO = 'Nieruchomości-online';
 const PORTAL_ADRESOWO = 'Adresowo';
 const PORTAL_OTODOM = 'Otodom';
 
+function isRealCommercialOffer(offer) {
+  const url = String(offer?.url || '').toLowerCase();
+  const title = String(offer?.title || '').toLowerCase();
+  const type = String(offer?.type || '').toLowerCase();
+
+  if (!url) return false;
+
+  // Nigdy nie wpuszczamy stron wyników wyszukiwania/listingu jako ofert.
+  if (url.includes('morizon.pl') && !/morizon\.pl\/oferta\//i.test(url)) return false;
+  if (url.includes('gratka.pl') && !/gratka\.pl\/nieruchomosci\/.*\/ob\//i.test(url)) return false;
+  if (url.includes('domiporta.pl') && !/domiporta\.pl\/nieruchomosci\/sprzedam-/i.test(url)) return false;
+  if (url.includes('adresowo.pl') && !/adresowo\.pl\/o\//i.test(url)) return false;
+  if (url.includes('nieruchomosci-online.pl') && !/\.html(?:\?|$)/i.test(url)) return false;
+  if (url.includes('otodom.pl') && !/otodom\.pl\/pl\/oferta\//i.test(url)) return false;
+
+  // To jest moduł KOMERCYJNY. Odrzucamy mieszkania/domy/działki,
+  // nawet jeśli parser źródłowy błędnie przypisał je do kategorii komercyjnej.
+  if (/\bmieszkan(?:ie|ia|iu|iem|iach|i)\b/.test(type)) return false;
+  if (/\bdom(?:y|u|em|ach)?\b/.test(type)) return false;
+  if (/\bdziałk(?:a|i|ę|ą|ach)\b/.test(type)) return false;
+
+  if (/(?:^|[\s,;|])mieszkanie(?:\s|$)/i.test(title)) return false;
+  if (/(?:^|[\s,;|])dom(?:\s|$)/i.test(title)) return false;
+  if (/(?:^|[\s,;|])działka(?:\s|$)/i.test(title)) return false;
+
+  return true;
+}
+
+function cleanCommercialResult(item) {
+  const offers = (item?.offers || []).filter(isRealCommercialOffer);
+  return {
+    ...item,
+    recognized: Number(item?.recognized || 0),
+    complete: offers.length,
+    filtered: offers.length,
+    offers
+  };
+}
+
 async function searchCommercial(options = {}) {
   const result = await base.searchCommercial(options);
   const area = Number(options.area ?? 62);
@@ -24,7 +63,7 @@ async function searchCommercial(options = {}) {
   ]);
 
   const otodomOffers = [...(otodomLokale.offers || []), ...(otodomHale.offers || [])]
-    .map(o => ({ ...o, locality: o.locality || location }))
+    .map(o => ({ ...o, locality: o.locality || location, type: 'Nieruchomość komercyjna' }))
     .filter(o => o.area >= minArea && o.area <= maxArea && Number.isFinite(o.price) && Number.isFinite(o.area) && o.url);
 
   const seen = new Set();
@@ -55,15 +94,17 @@ async function searchCommercial(options = {}) {
     radiusStrategy: 'Otodom: lokale użytkowe + hale i magazyny'
   };
 
-  return [...result.map(item => {
-    if (item.portal === PORTAL_NO) {
-      return { ...fixedNO, requestedRadius: radius, appliedRadius: 0, radiusSupported: false };
-    }
-    if (item.portal === PORTAL_ADRESOWO) {
-      return { ...fixedAdresowo, requestedRadius: radius };
-    }
-    return item;
-  }), fixedOtodom];
+  return [...result.map(cleanCommercialResult),
+    cleanCommercialResult(itemForPortal(result, PORTAL_NO, fixedNO, radius)),
+    cleanCommercialResult(itemForPortal(result, PORTAL_ADRESOWO, fixedAdresowo, radius)),
+    cleanCommercialResult(fixedOtodom)
+  ];
 }
 
-module.exports = { searchCommercial };
+function itemForPortal(result, portal, replacement, radius) {
+  const existing = result.find(x => x.portal === portal);
+  if (portal === PORTAL_NO) return { ...(existing || {}), ...replacement, requestedRadius: radius, appliedRadius: 0, radiusSupported: false };
+  return { ...(existing || {}), ...replacement, requestedRadius: radius };
+}
+
+module.exports = { searchCommercial, isRealCommercialOffer };
