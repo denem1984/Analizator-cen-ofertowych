@@ -1,0 +1,1 @@
+Otodom integration prepared separately first. Main Combined API integration will be made only after parser transport/HTML behavior is verified.
