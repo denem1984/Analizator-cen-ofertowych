@@ -5,7 +5,7 @@
   "description": "Backend wyszukiwania ofert dla Analizatora Cen Ofertowych",
   "main": "compat-server.js",
   "scripts": {
-    "start": "node compat-server.js",
+    "start": "node regional-fetch-bootstrap.js",
     "test:live:no": "node live-test-nieruchomosci-online.js"
   },
   "engines": {
