@@ -2,4 +2,3 @@
 // Render is configured to start `node server.js`, while the active
 // implementation lives in compat-server.js.
 require("./compat-server.js");
-require("./diagnostic-domiporta-once.js");
