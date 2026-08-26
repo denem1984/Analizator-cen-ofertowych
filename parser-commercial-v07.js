@@ -25,10 +25,21 @@ function isRealCommercialOffer(offer) {
   if (/\bdom(?:y|u|em|ach)?\b/.test(type)) return false;
   if (/\bdziałk(?:a|i|ę|ą|ach)\b/.test(type)) return false;
 
-  // Otodom potrafi zwrócić mieszkanie w wynikach kategorii "lokal".
-  // Nie wystarczy więc patrzeć na pole type, bo parser nadaje mu typ
-  // zgodny z żądaną kategorią. Odrzucamy typowe jednoznaczne sygnały
-  // mieszkaniowe obecne w tytule oferty.
+  // Twarde wykluczenia po URL. Są ważniejsze od pola `type`, ponieważ część
+  // parserów nadaje wynikowi typ zgodny z żądaną kategorią, nawet gdy portal
+  // zwrócił ofertę mieszkaniową.
+  if (/morizon\.pl\/oferta\/sprzedaz-mieszkanie(?:-|\/)/i.test(url)) return false;
+  if (/gratka\.pl\/nieruchomosci\/mieszkanie-/i.test(url)) return false;
+  if (/domiporta\.pl\/(?:nowe\/ogloszenie\/[^/]*mieszkan|nieruchomosci\/sprzedam-mieszkanie)/i.test(url)) return false;
+  if (/adresowo\.pl\/o\/mieszkanie-/i.test(url)) return false;
+  if (/nieruchomosci-online\.pl\/[^/]*mieszkanie/i.test(url)) return false;
+
+  // Otodom ma osobną kategorię /lokal, ale parser strony wynikowej może
+  // zwrócić także oferty mieszkań. W takim przypadku URL oferty zawiera
+  // jednoznaczny sygnał mieszkaniowy, nawet gdy tytuł jest pusty.
+  if (/otodom\.pl\/pl\/oferta\/[^?#]*(?:mieszkanie|apartament|kawaler|\bpokoje?\b|pokojowe|\bpok-?\d|\bm[234]-|loft-na-poddaszu)/i.test(url)) return false;
+
+  // Odrzucamy typowe jednoznaczne sygnały mieszkaniowe w tytule oferty.
   if (/\bmieszkan(?:ie|ia|iu|iem|iach|i)\b/.test(title)) return false;
   if (/\bapartament(?:y|ów|em|ach)?\b/.test(title)) return false;
   if (/\bkawaler(?:ka|ki|kę|ką|kach)\b/.test(title)) return false;
