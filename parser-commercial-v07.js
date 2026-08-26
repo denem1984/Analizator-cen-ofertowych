@@ -24,9 +24,19 @@ function isRealCommercialOffer(offer) {
   if (/\bmieszkan(?:ie|ia|iu|iem|iach|i)\b/.test(type)) return false;
   if (/\bdom(?:y|u|em|ach)?\b/.test(type)) return false;
   if (/\bdziałk(?:a|i|ę|ą|ach)\b/.test(type)) return false;
-  if (/(?:^|[\s,;|])mieszkanie(?:\s|$)/i.test(title)) return false;
-  if (/(?:^|[\s,;|])dom(?:\s|$)/i.test(title)) return false;
-  if (/(?:^|[\s,;|])działka(?:\s|$)/i.test(title)) return false;
+
+  // Otodom potrafi zwrócić mieszkanie w wynikach kategorii "lokal".
+  // Nie wystarczy więc patrzeć na pole type, bo parser nadaje mu typ
+  // zgodny z żądaną kategorią. Odrzucamy typowe jednoznaczne sygnały
+  // mieszkaniowe obecne w tytule oferty.
+  if (/\bmieszkan(?:ie|ia|iu|iem|iach|i)\b/.test(title)) return false;
+  if (/\bapartament(?:y|ów|em|ach)?\b/.test(title)) return false;
+  if (/\bkawaler(?:ka|ki|kę|ką|kach)\b/.test(title)) return false;
+  if (/\blokal\s+mieszkaln(?:y|a|e|ego|ej|ym|ych)\b/.test(title)) return false;
+  if (/\bnieruchomo(?:ść|sci)\s+mieszkaln(?:a|e|y)\b/.test(title)) return false;
+  if (/\b\d+\s*[- ]?pokoj(?:e|owy|owa|owe|owych|owym|owym|i)\b/.test(title)) return false;
+  if (/\b\d+\s*[- ]?pokojow(?:y|a|e|ych|ym|ą)\b/.test(title)) return false;
+  if (/\b(?:kuchnia|salon)\s+(?:z|i)\s+(?:aneksem|jadalni)\b/.test(title)) return false;
 
   return true;
 }
