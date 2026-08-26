@@ -1,0 +1,1 @@
+<!doctype html><meta charset="utf-8"><title>Otodom diagnostic</title><pre id="out">Uruchamianie...</pre><script>fetch('/api/live/otodom?location=Olsztyn&area=60&tolerance=10&radius=0').then(r=>r.json()).then(x=>out.textContent=JSON.stringify(x,null,2)).catch(e=>out.textContent=String(e));</script>
