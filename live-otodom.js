@@ -16,7 +16,7 @@ function httpGet(url, timeoutMs = 20000) {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', chunk => { body += chunk; });
-      res.on('end', () => resolve({ status: res.statusCode || 0, body, finalUrl: res.headers.location || url }));
+      res.on('end', () => resolve({ status: res.statusCode || 0, body, finalUrl: url }));
     });
     req.setTimeout(timeoutMs, () => req.destroy(new Error('Timeout Otodom')));
     req.on('error', reject);
@@ -24,12 +24,8 @@ function httpGet(url, timeoutMs = 20000) {
 }
 
 function slugify(value) {
-  return String(value || '')
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase().trim()
-    .replace(/ł/g, 'l')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().trim().replace(/ł/g, 'l').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 function buildUrl(location, minArea, maxArea, page = 1) {
@@ -46,81 +42,134 @@ function cleanText(value) {
   return String(value || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function decodeHtml(value) {
-  return String(value || '')
-    .replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'")
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+function parseNextData(html) {
+  const m = html.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (!m) return null;
+  try { return JSON.parse(m[1]); } catch { return null; }
 }
 
-function parseJsonLd(html) {
-  const out = [];
+function absoluteUrl(value, sourceUrl) {
+  try { return new URL(value, sourceUrl).href; } catch { return ''; }
+}
+
+function numberFrom(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return NaN;
+  const s = value.replace(/\s/g, '').replace(/zł|PLN/gi, '');
+  if (/^\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(s)) return Number(s.replace(/\./g, '').replace(',', '.'));
+  if (/^\d+(?:,\d+)?$/.test(s)) return Number(s.replace(',', '.'));
+  return NaN;
+}
+
+function pickNumber(obj, keys, depth = 0) {
+  if (!obj || depth > 3 || typeof obj !== 'object') return NaN;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      const direct = numberFrom(obj[key]);
+      if (Number.isFinite(direct)) return direct;
+      if (obj[key] && typeof obj[key] === 'object') {
+        const nested = pickNumber(obj[key], ['value', 'amount', 'raw', 'displayValue'], depth + 1);
+        if (Number.isFinite(nested)) return nested;
+      }
+    }
+  }
+  return NaN;
+}
+
+function pickString(obj, keys) {
+  if (!obj || typeof obj !== 'object') return '';
+  for (const key of keys) if (typeof obj[key] === 'string' && obj[key].trim()) return cleanText(obj[key]);
+  return '';
+}
+
+function addCandidate(offers, seen, obj, sourceUrl) {
+  if (!obj || typeof obj !== 'object') return false;
+  const rawUrl = pickString(obj, ['url', 'link', 'href', 'detailUrl']);
+  if (!rawUrl || !/\/pl\/oferta\//i.test(rawUrl)) return false;
+  const url = absoluteUrl(rawUrl, sourceUrl);
+  if (!url || seen.has(url)) return false;
+
+  const price = pickNumber(obj, ['priceAmount', 'totalPrice', 'price', 'amount']);
+  const area = pickNumber(obj, ['areaInSquareMeters', 'areaSqm', 'livingArea', 'area']);
+  const title = pickString(obj, ['title', 'name', 'shortDescription', 'description']);
+
+  if (!Number.isFinite(price) || !Number.isFinite(area)) return false;
+  seen.add(url);
+  offers.push({ portal: PORTAL, url, title, price, area });
+  return true;
+}
+
+function walkNextData(node, offers, seen, sourceUrl, depth = 0) {
+  if (!node || depth > 18) return;
+  if (Array.isArray(node)) {
+    for (const item of node) walkNextData(item, offers, seen, sourceUrl, depth + 1);
+    return;
+  }
+  if (typeof node !== 'object') return;
+
+  addCandidate(offers, seen, node, sourceUrl);
+  for (const value of Object.values(node)) {
+    if (value && typeof value === 'object') walkNextData(value, offers, seen, sourceUrl, depth + 1);
+  }
+}
+
+function parseJsonLd(html, sourceUrl, offers, seen) {
   const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
   let m;
   while ((m = re.exec(html))) {
     try {
       const parsed = JSON.parse(m[1].trim());
-      if (Array.isArray(parsed)) out.push(...parsed); else out.push(parsed);
+      walkNextData(parsed, offers, seen, sourceUrl, 0);
     } catch {}
   }
-  return out;
 }
 
 function parseOffers(html, sourceUrl) {
   const offers = [];
   const seen = new Set();
-  const ld = parseJsonLd(html);
 
-  for (const item of ld) {
-    const list = Array.isArray(item.itemListElement) ? item.itemListElement : [];
-    for (const entry of list) {
-      const obj = entry?.item || entry;
-      const url = obj?.url;
-      if (!url) continue;
-      const name = obj.name || '';
-      const image = obj.image || '';
-      const offersText = `${name} ${obj.description || ''}`;
-      const areaMatch = offersText.match(/(\d+(?:[.,]\d+)?)\s*m[²2]/i);
-      const priceMatch = offersText.match(/(\d[\d\s.,]*)\s*(?:zł|PLN)/i);
-      const area = areaMatch ? Number(areaMatch[1].replace(',', '.')) : NaN;
-      const price = priceMatch ? Number(priceMatch[1].replace(/\s/g, '').replace(/\.(?=\d{3}(?:\D|$))/g, '').replace(',', '.')) : NaN;
-      const absolute = new URL(url, sourceUrl).href;
-      if (!seen.has(absolute)) {
-        seen.add(absolute);
-        offers.push({ portal: PORTAL, url: absolute, title: cleanText(name), price, area, image });
-      }
-    }
-  }
+  // Otodom is a Next.js application. The search page contains structured
+  // listing data in __NEXT_DATA__; parse that first instead of scraping CSS.
+  const nextData = parseNextData(html);
+  if (nextData) walkNextData(nextData, offers, seen, sourceUrl, 0);
 
-  // Otodom embeds listing-card data in JSON/HTML. This fallback deliberately
-  // targets offer URLs first and extracts nearby text rather than depending on
-  // volatile CSS class names.
+  // JSON-LD is a secondary structured source.
+  parseJsonLd(html, sourceUrl, offers, seen);
+
+  // Conservative HTML fallback: use only the text immediately following the
+  // offer link, avoiding the broad neighbourhood window that mixed prices from
+  // adjacent cards in the first version.
   const hrefRe = /href=["'](\/pl\/oferta\/[^"'#?]+)["']/gi;
   let m;
   while ((m = hrefRe.exec(html))) {
-    const absolute = new URL(m[1], sourceUrl).href;
-    if (seen.has(absolute)) continue;
-    const start = Math.max(0, m.index - 2500);
-    const end = Math.min(html.length, m.index + 5000);
-    const block = decodeHtml(cleanText(html.slice(start, end)));
-    const areaMatches = [...block.matchAll(/(\d+(?:[.,]\d+)?)\s*m[²2]/gi)];
-    const priceMatches = [...block.matchAll(/(\d[\d\s.,]*)\s*(?:zł|PLN)/gi)];
-    const area = areaMatches.length ? Number(areaMatches[0][1].replace(',', '.')) : NaN;
-    let price = NaN;
-    if (priceMatches.length) {
-      const raw = priceMatches[0][1].replace(/\s/g, '');
-      const normalized = raw.includes(',') ? raw.replace(/\./g, '').replace(',', '.') : raw.replace(/\.(?=\d{3}(?:\D|$))/g, '');
-      price = Number(normalized);
+    const url = absoluteUrl(m[1], sourceUrl);
+    if (!url || seen.has(url)) continue;
+    const start = m.index;
+    const next = hrefRe.exec(html);
+    const end = next ? next.index : Math.min(html.length, start + 5000);
+    if (next) hrefRe.lastIndex = next.index;
+    const block = html.slice(start, end);
+    const text = cleanText(block);
+    const areaMatches = [...text.matchAll(/(\d+(?:[.,]\d+)?)\s*m[²2]/gi)];
+    const priceMatches = [...text.matchAll(/(\d[\d\s.]*(?:,\d+)?)\s*(?:zł|PLN)/gi)];
+    const area = areaMatches.length ? numberFrom(areaMatches[0][1]) : NaN;
+    const price = priceMatches.length ? numberFrom(priceMatches[0][1]) : NaN;
+    const titleMatch = block.match(/<h[23][^>]*>([\s\S]*?)<\/h[23]>/i);
+    const title = titleMatch ? cleanText(titleMatch[1]) : '';
+    if (Number.isFinite(price) && Number.isFinite(area)) {
+      seen.add(url);
+      offers.push({ portal: PORTAL, url, title, price, area });
     }
-    const title = block.slice(0, 300).trim();
-    seen.add(absolute);
-    offers.push({ portal: PORTAL, url: absolute, title, price, area });
   }
   return offers;
 }
 
 function extractPagination(html) {
-  const nums = [...html.matchAll(/[?&]page=(\d+)/g)].map(m => Number(m[1])).filter(Number.isFinite);
-  return nums.length ? Math.max(...nums, 1) : 1;
+  const candidates = [];
+  for (const re of [/[?&]page=(\d+)/g, /["']page["']\s*:\s*(\d+)/g, /["']totalPages["']\s*:\s*(\d+)/g]) {
+    for (const m of html.matchAll(re)) candidates.push(Number(m[1]));
+  }
+  return candidates.length ? Math.max(...candidates, 1) : 1;
 }
 
 async function searchOtodom({ location = 'Olsztyn', areaTarget = 62, tolerance = 10, radius = 0, maxPages = 20 } = {}) {
@@ -133,9 +182,6 @@ async function searchOtodom({ location = 'Olsztyn', areaTarget = 62, tolerance =
   let fetched = false;
   let error = '';
   let recognized = 0;
-
-  // Otodom URL does not currently encode our radius concept; keep it explicit
-  // in diagnostics and let the Combined API apply cross-portal radius rules.
   void radius;
 
   for (let page = 1; page <= maxPages; page++) {
