@@ -12,7 +12,8 @@ async function searchDomiportaHouses({
     wojewodztwo,
     areaTarget,
     tolerance,
-    radius
+    radius,
+    propertyType: 'Dom'
   });
 
   return {
