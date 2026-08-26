@@ -1,1 +1,74 @@
-<!doctype html><meta charset="utf-8"><title>Diagnostyka nieruchomości komercyjnych – Combined API</title><style>body{font:16px Arial;max-width:1100px;margin:40px auto;padding:20px}button{font-size:18px;padding:12px 20px}pre{white-space:pre-wrap;background:#f4f4f4;padding:15px;border-radius:8px;max-height:75vh;overflow:auto}</style><h1>Diagnostyka nieruchomości komercyjnych – Combined API</h1><p>Olsztyn · <b>Nieruchomość komercyjna</b> · <b>100 m²</b> · zakres <b>50–150 m²</b> · promień 0 km</p><p>Test obejmuje źródła komercyjne oraz deduplikację między portalami. Wynik pokazuje pełny JSON zwrócony przez API.</p><button onclick="run()">URUCHOM TEST KOMERCYJNY</button><pre id="out">Gotowe.</pre><script>async function run(){const o=document.getElementById('out');o.textContent='Uruchamiam pełny test nieruchomości komercyjnych…';try{const r=await fetch('/api/live/combined?location=Olsztyn&area=100&tolerance=50&radius=0&propertyType=Nieruchomo%C5%9B%C4%87%20komercyjna',{cache:'no-store'});const t=await r.text();o.textContent='HTTP '+r.status+'\n\n'+t}catch(e){o.textContent='BŁĄD: '+e.message}}</script>
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Diagnostyka nieruchomości komercyjnych – Combined API</title>
+<style>
+body{font:16px Arial;max-width:1100px;margin:40px auto;padding:20px}
+button{font-size:18px;padding:12px 20px;margin:0 8px 8px 0;cursor:pointer}
+button:disabled{opacity:.55;cursor:wait}
+pre{white-space:pre-wrap;background:#f4f4f4;padding:15px;border-radius:8px;max-height:75vh;overflow:auto}
+#download{display:none}
+.status{margin:10px 0;font-weight:bold}
+</style>
+<h1>Diagnostyka nieruchomości komercyjnych – Combined API</h1>
+<p>Olsztyn · <b>Nieruchomość komercyjna</b> · <b>100 m²</b> · zakres <b>50–150 m²</b> · promień 0 km</p>
+<p>Test obejmuje źródła komercyjne oraz deduplikację między portalami.</p>
+<p><b>Ważne:</b> wynik jest pobierany bezpośrednio z API. Po teście można zapisać cały surowy JSON do pliku, bez kopiowania z ekranu telefonu.</p>
+<div>
+  <button id="run" onclick="run()">URUCHOM TEST KOMERCYJNY</button>
+  <button id="download" onclick="downloadJson()">POBIERZ PEŁNY JSON</button>
+</div>
+<div id="status" class="status">Gotowe.</div>
+<pre id="out">Nie wykonano jeszcze testu.</pre>
+<script>
+let lastResponseText='';
+let lastStatus=0;
+
+async function run(){
+  const btn=document.getElementById('run');
+  const dl=document.getElementById('download');
+  const status=document.getElementById('status');
+  const o=document.getElementById('out');
+  btn.disabled=true;
+  dl.style.display='none';
+  lastResponseText='';
+  lastStatus=0;
+  status.textContent='Uruchamiam pełny test nieruchomości komercyjnych…';
+  o.textContent='Oczekiwanie na odpowiedź API…';
+  try{
+    const r=await fetch('/api/live/combined?location=Olsztyn&area=100&tolerance=50&radius=0&propertyType=Nieruchomo%C5%9B%C4%87%20komercyjna',{cache:'no-store'});
+    const t=await r.text();
+    lastResponseText=t;
+    lastStatus=r.status;
+    o.textContent='HTTP '+r.status+'\\n\\n'+t;
+    if(r.ok){
+      status.textContent='Test zakończony. Pełny wynik jest gotowy do pobrania.';
+      dl.style.display='inline-block';
+    }else{
+      status.textContent='Test zakończony błędem HTTP '+r.status+'.';
+      dl.style.display='inline-block';
+    }
+  }catch(e){
+    lastResponseText='';
+    lastStatus=0;
+    status.textContent='BŁĄD połączenia: '+e.message;
+    o.textContent='BŁĄD: '+e.message;
+  }finally{
+    btn.disabled=false;
+  }
+}
+
+function downloadJson(){
+  if(!lastResponseText)return;
+  const blob=new Blob([lastResponseText],{type:'application/json;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+  a.href=url;
+  a.download='test-commercial-'+stamp+'.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+</script>
