@@ -18,14 +18,15 @@ function httpGet(url, timeoutMs = 20000) {
       res.on('data', chunk => { body += chunk; });
       res.on('end', () => resolve({ status: res.statusCode || 0, body, finalUrl: url }));
     });
-    req.setTimeout(timeoutMs, () => req.destroy(new Error('Timeout Otodom')));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('Timeout Otodom'));
     req.on('error', reject);
   });
 }
 
 function slugify(value) {
   return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase().trim().replace(/ł/g, 'l').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    .toLowerCase().trim().replace(/ł/g, 'l').replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 function buildUrl(location, minArea, maxArea, page = 1) {
@@ -39,17 +40,15 @@ function buildUrl(location, minArea, maxArea, page = 1) {
 }
 
 function cleanText(value) {
-  return String(value || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function parseNextData(html) {
-  const m = html.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
-  if (!m) return null;
-  try { return JSON.parse(m[1]); } catch { return null; }
-}
-
-function absoluteUrl(value, sourceUrl) {
-  try { return new URL(value, sourceUrl).href; } catch { return ''; }
+  return String(value || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&#x27;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ').trim();
 }
 
 function numberFrom(value) {
@@ -61,115 +60,63 @@ function numberFrom(value) {
   return NaN;
 }
 
-function pickNumber(obj, keys, depth = 0) {
-  if (!obj || depth > 3 || typeof obj !== 'object') return NaN;
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(obj, key)) {
-      const direct = numberFrom(obj[key]);
-      if (Number.isFinite(direct)) return direct;
-      if (obj[key] && typeof obj[key] === 'object') {
-        const nested = pickNumber(obj[key], ['value', 'amount', 'raw', 'displayValue'], depth + 1);
-        if (Number.isFinite(nested)) return nested;
-      }
-    }
-  }
-  return NaN;
-}
-
-function pickString(obj, keys) {
-  if (!obj || typeof obj !== 'object') return '';
-  for (const key of keys) if (typeof obj[key] === 'string' && obj[key].trim()) return cleanText(obj[key]);
-  return '';
-}
-
-function addCandidate(offers, seen, obj, sourceUrl) {
-  if (!obj || typeof obj !== 'object') return false;
-  const rawUrl = pickString(obj, ['url', 'link', 'href', 'detailUrl']);
-  if (!rawUrl || !/\/pl\/oferta\//i.test(rawUrl)) return false;
-  const url = absoluteUrl(rawUrl, sourceUrl);
-  if (!url || seen.has(url)) return false;
-
-  const price = pickNumber(obj, ['priceAmount', 'totalPrice', 'price', 'amount']);
-  const area = pickNumber(obj, ['areaInSquareMeters', 'areaSqm', 'livingArea', 'area']);
-  const title = pickString(obj, ['title', 'name', 'shortDescription', 'description']);
-
-  if (!Number.isFinite(price) || !Number.isFinite(area)) return false;
-  seen.add(url);
-  offers.push({ portal: PORTAL, url, title, price, area });
-  return true;
-}
-
-function walkNextData(node, offers, seen, sourceUrl, depth = 0) {
-  if (!node || depth > 18) return;
-  if (Array.isArray(node)) {
-    for (const item of node) walkNextData(item, offers, seen, sourceUrl, depth + 1);
-    return;
-  }
-  if (typeof node !== 'object') return;
-
-  addCandidate(offers, seen, node, sourceUrl);
-  for (const value of Object.values(node)) {
-    if (value && typeof value === 'object') walkNextData(value, offers, seen, sourceUrl, depth + 1);
-  }
-}
-
-function parseJsonLd(html, sourceUrl, offers, seen) {
-  const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-  let m;
-  while ((m = re.exec(html))) {
-    try {
-      const parsed = JSON.parse(m[1].trim());
-      walkNextData(parsed, offers, seen, sourceUrl, 0);
-    } catch {}
-  }
+function absoluteUrl(value, sourceUrl) {
+  try { return new URL(value, sourceUrl).href; } catch { return ''; }
 }
 
 function parseOffers(html, sourceUrl) {
   const offers = [];
   const seen = new Set();
 
-  // Otodom is a Next.js application. The search page contains structured
-  // listing data in __NEXT_DATA__; parse that first instead of scraping CSS.
-  const nextData = parseNextData(html);
-  if (nextData) walkNextData(nextData, offers, seen, sourceUrl, 0);
-
-  // JSON-LD is a secondary structured source.
-  parseJsonLd(html, sourceUrl, offers, seen);
-
-  // Conservative HTML fallback: use only the text immediately following the
-  // offer link, avoiding the broad neighbourhood window that mixed prices from
-  // adjacent cards in the first version.
+  // Otodom's result page contains the offer cards in the HTML delivered by
+  // Next.js. We deliberately parse each card as the text between two offer
+  // links. This avoids the broad neighbourhood scan that mixed values from
+  // adjacent cards, while avoiding a full recursive walk of __NEXT_DATA__.
   const hrefRe = /href=["'](\/pl\/oferta\/[^"'#?]+)["']/gi;
-  let m;
-  while ((m = hrefRe.exec(html))) {
+  const matches = [...html.matchAll(hrefRe)];
+
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
     const url = absoluteUrl(m[1], sourceUrl);
     if (!url || seen.has(url)) continue;
+
     const start = m.index;
-    const next = hrefRe.exec(html);
-    const end = next ? next.index : Math.min(html.length, start + 5000);
-    if (next) hrefRe.lastIndex = next.index;
+    const end = i + 1 < matches.length ? matches[i + 1].index : Math.min(html.length, start + 12000);
     const block = html.slice(start, end);
     const text = cleanText(block);
+
+    // Price is normally rendered in the card as a PLN value. Prefer the first
+    // plausible property price and ignore tiny values such as room counts.
+    const priceMatches = [...text.matchAll(/(\d{2,3}(?:[\s.]\d{3})+|\d{4,8})(?:,\d{1,2})?\s*(?:zł|PLN)/gi)];
+    let price = NaN;
+    for (const pm of priceMatches) {
+      const n = numberFrom(pm[1]);
+      if (Number.isFinite(n) && n >= 10000) { price = n; break; }
+    }
+
     const areaMatches = [...text.matchAll(/(\d+(?:[.,]\d+)?)\s*m[²2]/gi)];
-    const priceMatches = [...text.matchAll(/(\d[\d\s.]*(?:,\d+)?)\s*(?:zł|PLN)/gi)];
-    const area = areaMatches.length ? numberFrom(areaMatches[0][1]) : NaN;
-    const price = priceMatches.length ? numberFrom(priceMatches[0][1]) : NaN;
-    const titleMatch = block.match(/<h[23][^>]*>([\s\S]*?)<\/h[23]>/i);
+    let area = NaN;
+    for (const am of areaMatches) {
+      const n = numberFrom(am[1]);
+      if (Number.isFinite(n) && n >= 10 && n <= 1000) { area = n; break; }
+    }
+
+    // Extract a clean visible title when possible; otherwise leave it empty.
+    const titleMatch = block.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
     const title = titleMatch ? cleanText(titleMatch[1]) : '';
+
     if (Number.isFinite(price) && Number.isFinite(area)) {
       seen.add(url);
       offers.push({ portal: PORTAL, url, title, price, area });
     }
   }
+
   return offers;
 }
 
 function extractPagination(html) {
-  const candidates = [];
-  for (const re of [/[?&]page=(\d+)/g, /["']page["']\s*:\s*(\d+)/g, /["']totalPages["']\s*:\s*(\d+)/g]) {
-    for (const m of html.matchAll(re)) candidates.push(Number(m[1]));
-  }
-  return candidates.length ? Math.max(...candidates, 1) : 1;
+  const nums = [...html.matchAll(/[?&]page=(\d+)/g)].map(m => Number(m[1])).filter(Number.isFinite);
+  return nums.length ? Math.max(...nums, 1) : 1;
 }
 
 async function searchOtodom({ location = 'Olsztyn', areaTarget = 62, tolerance = 10, radius = 0, maxPages = 20 } = {}) {
@@ -190,7 +137,7 @@ async function searchOtodom({ location = 'Olsztyn', areaTarget = 62, tolerance =
       const response = await httpGet(url);
       httpStatus = response.status;
       totalHtmlLength += response.body.length;
-      fetched = fetched || response.status >= 200 && response.status < 400;
+      fetched = fetched || (response.status >= 200 && response.status < 400);
       const offers = parseOffers(response.body, url);
       recognized += offers.length;
       const filtered = offers.filter(o => Number.isFinite(o.area) && o.area >= minArea && o.area <= maxArea && Number.isFinite(o.price) && o.url);
