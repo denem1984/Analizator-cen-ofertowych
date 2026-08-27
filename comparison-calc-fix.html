@@ -1,0 +1,56 @@
+<style>
+.comparison-calc{margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px}.comparison-calc-panel{background:#0d1d32;border:1px solid #1f3652;border-radius:10px;padding:14px}.comparison-calc-panel h3{margin:0 0 12px;font-size:16px}.comparison-calc-field{margin-bottom:10px}.comparison-calc-field label{display:block;color:#c9d6e6;font-size:12px;font-weight:700;margin-bottom:5px}.comparison-calc-field input{width:100%;height:40px;border:1px solid #36506e;border-radius:8px;background:#0b1a2d;color:var(--text);padding:0 10px;font-size:14px}.comparison-calc-results{border-top:1px solid #29415e;margin-top:12px;padding-top:10px}.comparison-calc-line{display:flex;justify-content:space-between;gap:12px;margin:7px 0}.comparison-calc-line strong{color:var(--accent)}.comparison-calc-note{color:var(--muted);padding-top:8px}.comparison-calc-deviation{font-size:17px}.comparison-calc-deviation strong{font-size:22px}@media(max-width:900px){.comparison-calc{grid-template-columns:1fr}}
+</style>
+<script>
+(function(){
+  function parseMoney(text){
+    const s=String(text||'').replace(/[^0-9,.-]/g,'').replace(/\./g,'').replace(',','.');
+    const n=Number(s);return Number.isFinite(n)?n:null;
+  }
+  function selectedRows(){
+    const card=document.getElementById('selectedOffersCard');
+    if(!card||!Array.isArray(window.currentOffers)&&typeof currentOffers==='undefined') return [];
+    const keys=[...card.querySelectorAll('[data-selected-key]:checked')].map(x=>x.getAttribute('data-selected-key'));
+    const source=typeof currentOffers!=='undefined'?currentOffers:[];
+    return source.filter(o=>keys.includes(String(o?.url||'')+'|'+String(o?.price??'')+'|'+String(o?.area??'')));
+  }
+  function renderCalc(){
+    const card=document.getElementById('selectedOffersCard');
+    if(!card)return;
+    let host=document.getElementById('comparisonCalcHost');
+    if(!host){
+      host=document.createElement('div');host.id='comparisonCalcHost';host.className='comparison-calc';
+      const content=document.getElementById('selectedOffersContent');
+      if(!content)return;
+      content.appendChild(host);
+    }
+    const rows=selectedRows();
+    const avgValues=rows.map(o=>Number(o.priceM2)).filter(Number.isFinite);
+    const avg=avgValues.length?avgValues.reduce((a,b)=>a+b,0)/avgValues.length:null;
+    const oldPrice=document.getElementById('comparisonMyPrice')?.value||'';
+    const oldArea=document.getElementById('comparisonMyArea')?.value||'';
+    host.innerHTML='<div class="comparison-calc-panel"><h3>Analizowana nieruchomość</h3><div class="comparison-calc-field"><label for="comparisonMyPrice">Cena (zł)</label><input id="comparisonMyPrice" type="number" min="0" step="0.01" placeholder="Wpisz cenę" value="'+oldPrice+'"></div><div class="comparison-calc-field"><label for="comparisonMyArea">Powierzchnia (m²)</label><input id="comparisonMyArea" type="number" min="0.01" step="0.01" placeholder="Wpisz powierzchnię" value="'+oldArea+'"></div></div><div class="comparison-calc-panel"><h3>Porównanie</h3><div class="comparison-calc-results" id="comparisonCalcResults"></div></div>';
+    const update=()=>{
+      const box=document.getElementById('comparisonCalcResults');if(!box)return;
+      const price=Number(document.getElementById('comparisonMyPrice')?.value),area=Number(document.getElementById('comparisonMyArea')?.value);
+      let html='<div class="comparison-calc-line"><span>Średnia cena wybranych ofert:</span><strong>'+(avg===null?'—':avg.toLocaleString('pl-PL',{maximumFractionDigits:0})+' zł/m²')+'</strong></div>';
+      if(Number.isFinite(price)&&price>0&&Number.isFinite(area)&&area>0){
+        const myM2=price/area;
+        html='<div class="comparison-calc-line"><span>Cena mojej nieruchomości:</span><strong>'+price.toLocaleString('pl-PL',{maximumFractionDigits:0})+' zł</strong></div><div class="comparison-calc-line"><span>Powierzchnia:</span><strong>'+area.toLocaleString('pl-PL',{maximumFractionDigits:2})+' m²</strong></div><div class="comparison-calc-line"><span>Cena za m²:</span><strong>'+myM2.toLocaleString('pl-PL',{maximumFractionDigits:0})+' zł/m²</strong></div><div class="comparison-calc-line"><span>Średnia cena wybranych ofert:</span><strong>'+(avg===null?'—':avg.toLocaleString('pl-PL',{maximumFractionDigits:0})+' zł/m²')+'</strong></div>';
+        if(avg!==null&&avg>0){const dev=(myM2-avg)/avg*100;html+='<div class="comparison-calc-line comparison-calc-deviation"><span>Odchylenie od średniej:</span><strong>'+((dev>=0?'+':'')+dev.toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2})+'%')+'</strong></div>'}
+        else html+='<div class="comparison-calc-note">Nie można obliczyć odchylenia bez wybranych ofert.</div>';
+      }else html+='<div class="comparison-calc-note">Wpisz cenę i powierzchnię analizowanej nieruchomości.</div>';
+      box.innerHTML=html;
+    };
+    document.getElementById('comparisonMyPrice').addEventListener('input',update);
+    document.getElementById('comparisonMyArea').addEventListener('input',update);
+    update();
+  }
+  let timer=null;
+  function schedule(){clearTimeout(timer);timer=setTimeout(renderCalc,20)}
+  const observer=new MutationObserver(schedule);
+  observer.observe(document.body,{childList:true,subtree:true});
+  document.addEventListener('DOMContentLoaded',schedule);
+  schedule();
+})();
+</script>
