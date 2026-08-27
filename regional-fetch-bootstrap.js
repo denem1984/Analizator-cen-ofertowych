@@ -1,4 +1,5 @@
 const { URL } = require('url');
+const Module = require('module');
 
 const originalFetch = global.fetch;
 const cache = new Map();
@@ -12,7 +13,7 @@ function slugify(value) {
     .replace(/ł/g, 'l')
     .replace(/đ/g, 'd')
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .replace(/^-|-+$/g, '');
 }
 
 function cityFromNieruchomosciUrl(rawUrl) {
@@ -54,5 +55,14 @@ global.fetch = async function patchedFetch(input, init) {
   }
 };
 
+const originalRequire = Module.prototype.require;
+Module.prototype.require = function patchedRequire(request) {
+  if (request === './live-combined-api-v05' && /compat-server\.js$/i.test(this.filename || '')) {
+    return originalRequire.call(this, './live-combined-with-counts');
+  }
+  return originalRequire.apply(this, arguments);
+};
+
 console.log('REGIONAL N-O FETCH ENABLED');
+console.log('COMBINED PORTAL COUNTS ENABLED');
 require('./compat-server');
