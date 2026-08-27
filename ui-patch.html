@@ -1,24 +1,66 @@
+<style>
+#selectedOffersCard{margin-top:18px}.select-col{width:42px;text-align:center}.offer-check{width:18px;height:18px;accent-color:var(--accent);cursor:pointer}.selected-layout{display:grid;grid-template-columns:minmax(0,2fr) minmax(280px,1fr);gap:16px}.selected-table-wrap{overflow:auto;border:1px solid #29415e;border-radius:10px}.selected-table{width:100%;border-collapse:collapse;min-width:760px}.selected-table th{background:#0c1b2e;color:#9fb5cd;text-align:left;font-size:11px;text-transform:uppercase;padding:10px}.selected-table td{padding:9px 10px;border-top:1px solid #243b56;white-space:nowrap}.selected-table a{color:var(--accent);font-weight:700}.calc-panel{background:#0d1d32;border:1px solid #1f3652;border-radius:10px;padding:14px}.calc-panel h3{margin:0 0 12px;font-size:16px}.calc-field{margin-bottom:10px}.calc-field label{display:block;color:#c9d6e6;font-size:12px;font-weight:700;margin-bottom:5px}.calc-field input{width:100%;height:40px;border:1px solid #36506e;border-radius:8px;background:#0b1a2d;color:var(--text);padding:0 10px;font-size:14px}.calc-result{margin-top:12px;padding-top:12px;border-top:1px solid #29415e}.calc-line{display:flex;justify-content:space-between;gap:12px;margin:7px 0}.calc-line strong{color:var(--accent)}.calc-empty{color:var(--muted);padding:14px 0}.calc-warning{color:#ffd1d1}.selected-summary{display:flex;align-items:center;gap:10px}.selected-count{color:var(--accent);font-weight:700}.selected-avg{margin-top:12px;font-size:14px}.selected-avg strong{font-size:20px;color:var(--accent)}
+@media(max-width:900px){.selected-layout{grid-template-columns:1fr}}
+</style>
 <script>
 (function(){
-  const isPlots=()=>String(window.lastData?.propertyType||'').toLowerCase().includes('dział')||String(window.lastData?.propertyType||'').toLowerCase().includes('dzial');
+  const selectedKeys=new Set();
+  const keyOf=o=>String(o?.url||'')+'|'+String(o?.price??'')+'|'+String(o?.area??'');
+  const selectedOffers=()=>currentOffers.filter(o=>selectedKeys.has(keyOf(o)));
+  const avgSelected=()=>{const rows=selectedOffers().map(o=>Number(o.priceM2)).filter(Number.isFinite);return rows.length?rows.reduce((a,b)=>a+b,0)/rows.length:null};
+  const ensureSelectedCard=()=>{
+    let card=document.getElementById('selectedOffersCard');
+    if(card)return card;
+    const offersCard=document.getElementById('offers')?.closest('.card');
+    if(!offersCard)return null;
+    card=document.createElement('section');card.className='card';card.id='selectedOffersCard';
+    card.innerHTML='<div class="section-title"><h2>Wybrane oferty</h2><div class="selected-summary"><span id="selectedCount" class="selected-count">0</span><span class="pill">zaznaczonych</span></div></div><div id="selectedOffersContent"></div>';
+    offersCard.parentNode.insertBefore(card,offersCard);
+    return card;
+  };
+  const ensureCalc=()=>{
+    const card=ensureSelectedCard();if(!card)return null;
+    let panel=document.getElementById('comparisonPanel');if(panel)return panel;
+    panel=document.createElement('div');panel.id='comparisonPanel';panel.className='calc-panel';
+    panel.innerHTML='<h3>Moja nieruchomość</h3><div class="calc-field"><label for="myPrice">Cena</label><input id="myPrice" type="number" min="0" step="0.01" placeholder="Wpisz cenę"></div><div class="calc-field"><label for="myArea">Powierzchnia</label><input id="myArea" type="number" min="0.01" step="0.01" placeholder="Wpisz powierzchnię"></div><div id="calcResults" class="calc-result"></div>';
+    return panel;
+  };
+  const calc=()=>{
+    const box=document.getElementById('calcResults');if(!box)return;
+    const price=Number(document.getElementById('myPrice')?.value),area=Number(document.getElementById('myArea')?.value),avg=avgSelected();
+    let html='';
+    if(Number.isFinite(price)&&price>0&&Number.isFinite(area)&&area>0){
+      const myM2=price/area;html+='<div class="calc-line"><span>Cena za m²:</span><strong>'+fmtM2(myM2)+'</strong></div>';
+      if(avg!==null){const deviation=((myM2-avg)/avg)*100;html+='<div class="calc-line"><span>Średnia wybranych ofert:</span><strong>'+fmtM2(avg)+'</strong></div><div class="calc-line"><span>Odchylenie:</span><strong>'+((deviation>=0?'+':'')+deviation.toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2})+'%')+'</strong></div>'}
+      else html+='<div class="calc-empty">Nie wybrano żadnej oferty do porównania.</div>';
+    }else if(avg!==null){html+='<div class="calc-line"><span>Średnia wybranych ofert:</span><strong>'+fmtM2(avg)+'</strong></div><div class="calc-empty">Wpisz cenę i powierzchnię swojej nieruchomości, aby obliczyć odchylenie.</div>'}
+    else html='<div class="calc-empty">Nie wybrano żadnej oferty do porównania.</div>';
+    box.innerHTML=html;
+  };
+  const renderSelected=()=>{
+    const card=ensureSelectedCard();if(!card)return;
+    const rows=selectedOffers();
+    const count=document.getElementById('selectedCount');if(count)count.textContent=rows.length;
+    const content=document.getElementById('selectedOffersContent');
+    if(!rows.length){content.innerHTML='<div class="calc-empty">Nie wybrano żadnej oferty. Zaznacz checkbox przy ofercie na liście poniżej.</div>';return;}
+    const avg=avgSelected();
+    content.innerHTML='<div class="selected-layout"><div><div class="selected-table-wrap"><table class="selected-table"><thead><tr><th class="select-col">✓</th><th>Typ</th><th>Adres</th><th>Źródło</th><th>URL</th><th>Cena</th><th>Pow.</th><th>Cena/m²</th></tr></thead><tbody>'+rows.map(o=>{const loc=[o.locality,o.street].filter(Boolean).join(', ')||o.location||'—';return '<tr><td class="select-col"><input class="offer-check" type="checkbox" checked data-selected-key="'+esc(keyOf(o))+'"></td><td>'+esc(o.type||window.lastData?.propertyType||'')+'</td><td>'+esc(loc)+'</td><td>'+esc(o.source||o.portal||'—')+'</td><td><a href="'+esc(o.url||'#')+'" target="_blank" rel="noopener">Otwórz</a></td><td class="price">'+fmtMoney(o.price)+'</td><td>'+fmtNum(o.area)+' m²</td><td class="pm2">'+fmtM2(o.priceM2)+'</td></tr>'}).join('')+'</tbody></table></div><div class="selected-avg">Średnia cena ofert: <strong>'+ (avg===null?'—':fmtM2(avg)) +'</strong></div></div><div id="comparisonPanel"></div></div>';
+    const panel=document.getElementById('comparisonPanel');const template=ensureCalc();if(template&&panel&&template!==panel){panel.replaceWith(template)}
+    document.querySelectorAll('#selectedOffersCard [data-selected-key]').forEach(el=>el.addEventListener('change',()=>{const k=el.getAttribute('data-selected-key');if(el.checked)selectedKeys.add(k);else selectedKeys.delete(k);renderSelected();renderOffers();calc()}));
+    ['myPrice','myArea'].forEach(id=>document.getElementById(id)?.addEventListener('input',calc));
+    calc();
+  };
+  const originalRenderOffers=window.renderOffers;
   window.renderOffers=function(){
     const data=window.lastData||{};const offers=[...currentOffers].sort((a,b)=>{const av=sortValue(a,sortKey,data),bv=sortValue(b,sortKey,data);if(typeof av==='number'&&typeof bv==='number'){if(Number.isNaN(av)&&Number.isNaN(bv))return 0;if(Number.isNaN(av))return 1;if(Number.isNaN(bv))return -1;return(av-bv)*sortDir}return String(av).localeCompare(String(bv),'pl',{numeric:true,sensitivity:'base'})*sortDir});
-    const arrows={type:'Typ',location:'Lokalizacja / adres',source:'Źródło',price:'Cena',area:'Powierzchnia',priceM2:'Cena/m²'};const th=k=>'<th class="'+(sortKey===k?(sortDir===1?'sort-asc':'sort-desc'):'')+'" onclick="sortOffers(\''+k+'\')">'+arrows[k]+'<span class="arrow">'+(sortKey===k?(sortDir===1?'▲':'▼'):'↕')+'</span></th>';
-    $('offerCount').textContent=offers.length+' ofert';$('offers').innerHTML='<div class="offers-wrap"><table class="offers"><thead><tr><th>LP</th>'+th('type')+th('location')+th('source')+'<th>URL</th>'+th('price')+th('area')+th('priceM2')+'</tr></thead><tbody>'+offers.map((o,i)=>{const loc=[o.locality,o.street].filter(Boolean).join(', ')||o.location||'—';return '<tr><td>'+(i+1)+'</td><td>'+esc(o.type||data.propertyType||'')+'</td><td>'+esc(loc)+'</td><td>'+esc(o.source||o.portal||'—')+'</td><td><a href="'+esc(o.url||'#')+'" target="_blank" rel="noopener">Otwórz</a></td><td class="price">'+fmtMoney(o.price)+'</td><td>'+fmtNum(o.area)+' m²</td><td class="pm2">'+fmtM2(o.priceM2)+'</td></tr>'}).join('')+'</tbody></table></div>';
+    const arrows={type:'Typ',location:'Lokalizacja / adres',source:'Źródło',price:'Cena',area:'Powierzchnia',priceM2:'Cena/m²'};
+    const th=k=>'<th class="'+(sortKey===k?(sortDir===1?'sort-asc':'sort-desc'):'')+'" onclick="sortOffers(\''+k+'\')">'+arrows[k]+'<span class="arrow">'+(sortKey===k?(sortDir===1?'▲':'▼'):'↕')+'</span></th>';
+    $('offerCount').textContent=offers.length+' ofert';
+    $('offers').innerHTML='<div class="offers-wrap"><table class="offers"><thead><tr><th class="select-col">✓</th><th>LP</th>'+th('type')+th('location')+th('source')+'<th>URL</th>'+th('price')+th('area')+th('priceM2')+'</tr></thead><tbody>'+offers.map((o,i)=>{const k=keyOf(o),loc=[o.locality,o.street].filter(Boolean).join(', ')||o.location||'—';return '<tr><td class="select-col"><input class="offer-check" type="checkbox" '+(selectedKeys.has(k)?'checked':'')+' data-offer-key="'+esc(k)+'"></td><td>'+(i+1)+'</td><td>'+esc(o.type||data.propertyType||'')+'</td><td>'+esc(loc)+'</td><td>'+esc(o.source||o.portal||'—')+'</td><td><a href="'+esc(o.url||'#')+'" target="_blank" rel="noopener">Otwórz</a></td><td class="price">'+fmtMoney(o.price)+'</td><td>'+fmtNum(o.area)+' m²</td><td class="pm2">'+fmtM2(o.priceM2)+'</td></tr>'}).join('')+'</tbody></table></div>';
+    document.querySelectorAll('#offers [data-offer-key]').forEach(el=>el.addEventListener('change',()=>{const k=el.getAttribute('data-offer-key');if(el.checked)selectedKeys.add(k);else selectedKeys.delete(k);renderSelected()}));
+    renderSelected();
   };
-  window.render=function(data){
-    window.lastData=data;$('results').classList.remove('hidden');$('message').classList.add('hidden');const sources=Array.isArray(data.sources)?data.sources:[];currentOffers=Array.isArray(data.offers)?data.offers:[];const plots=isPlots();
-    const filtered=plots?Number(data.beforeCrossDedup||currentOffers.length):sources.reduce((a,s)=>a+Number(s.filtered||0),0);const duplicates=plots?Number(data.duplicatesRemoved||0):sources.reduce((a,s)=>a+Number(s.internalDuplicatesRemoved||0),0);const accepted=plots?Number(data.unique||currentOffers.length):sources.reduce((a,s)=>a+Number(s.acceptedAfterDedup||0),0);
-    $('filtered').textContent=fmtNum(filtered);$('duplicates').textContent=fmtNum(duplicates);$('accepted').textContent=fmtNum(accepted);const areas=currentOffers.map(o=>Number(o.area)).filter(Number.isFinite);$('range').innerHTML=areas.length?'Zakres powierzchni: <strong>'+fmtNum(Math.min(...areas))+' m² – '+fmtNum(Math.max(...areas))+' m²</strong>':'Brak ofert w wyniku.';$('queryInfo').textContent=data.filterLabel?esc(data.location||'')+' · '+esc(data.propertyType||'')+' · '+esc(data.filterLabel)+' · promień '+fmtNum(data.radius)+' km':esc(data.location||'')+' · '+esc(data.propertyType||'')+' · promień '+fmtNum(data.radius)+' km';
-    let sourceStats=sources;
-    if(plots){
-      const stats={};sources.forEach(s=>{const n=s.portal||s.source||'Źródło';stats[n]={filtered:Number(s.filtered||0),internal:0,external:0,accepted:0}});const sourceName=o=>String(o?.portal||o?.source||'').trim()||'Źródło';
-      (Array.isArray(data.duplicates)?data.duplicates:[]).forEach(d=>{const dup=sourceName(d.duplicate),kept=sourceName(d.kept);if(!stats[dup])stats[dup]={filtered:0,internal:0,external:0,accepted:0};if(dup===kept)stats[dup].internal++;else stats[dup].external++});
-      sources.forEach(s=>{const n=s.portal||s.source||'Źródło';const x=stats[n]||{filtered:Number(s.filtered||0),internal:0,external:0,accepted:0};x.accepted=Math.max(0,x.filtered-x.internal-x.external);stats[n]=x});
-      sourceStats=sources.map(s=>{const n=s.portal||s.source||'Źródło',x=stats[n];return {...s,filtered:x.filtered,internalDuplicatesRemoved:x.internal,externalDuplicatesRemoved:x.external,duplicatesRemoved:x.internal+x.external,acceptedAfterDedup:x.accepted}})
-    }
-    $('sources').innerHTML=sourceStats.map(s=>'<div class="source"><h3>'+esc(s.portal||s.source||'Źródło')+'</h3><div>ilość ofert po filtrze: <b>'+fmtNum(s.filtered??0)+'</b></div><div>duplikaty wewnętrzne: <b>'+fmtNum(s.internalDuplicatesRemoved||0)+'</b></div><div>duplikaty zewnętrzne: <b>'+fmtNum(s.externalDuplicatesRemoved||0)+'</b></div><div>usunięte duplikaty łącznie: <b>'+fmtNum(s.duplicatesRemoved??Number(s.internalDuplicatesRemoved||0)+Number(s.externalDuplicatesRemoved||0))+'</b></div><div>przyjęto: <b>'+fmtNum(s.acceptedAfterDedup??Math.max(0,Number(s.filtered||0)-Number(s.duplicatesRemoved||0)))+'</b></div></div>').join('');
-    const pill=document.querySelector('.section-title .pill');if(pill)pill.textContent=sources.length+' źródeł danych';sortKey=null;sortDir=1;window.renderOffers();
-  };
+  const originalRender=window.render;
+  window.render=function(data){selectedKeys.clear();originalRender(data);ensureSelectedCard();renderSelected();};
 })();
 </script>
