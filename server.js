@@ -14,6 +14,7 @@ require('./compat-server.js');
 
 const indexPath=path.join(__dirname,'index.html');
 const uiPatchPath=path.join(__dirname,'ui-patch.html');
+const excelPatchPath=path.join(__dirname,'excel-export-patch.html');
 
 async function suggestLocations(query){
  const q=String(query||'').trim();
@@ -81,8 +82,11 @@ const proxy=http.createServer(async(req,res)=>{
   try{
    let html=fs.readFileSync(indexPath,'utf8');
    let patch='';
+   let excelPatch='';
    try{patch=fs.readFileSync(uiPatchPath,'utf8')}catch{}
+   try{excelPatch=fs.readFileSync(excelPatchPath,'utf8')}catch{}
    if(patch)html=html.replace('</body>',patch+'</body>');
+   if(excelPatch)html=html.replace('</body>',excelPatch+'</body>');
    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});
    return res.end(html);
   }catch(e){
