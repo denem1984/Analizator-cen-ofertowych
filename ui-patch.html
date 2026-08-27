@@ -2,43 +2,23 @@
 (function(){
   const isPlots=()=>String(window.lastData?.propertyType||'').toLowerCase().includes('dział')||String(window.lastData?.propertyType||'').toLowerCase().includes('dzial');
   window.renderOffers=function(){
-    const data=window.lastData||{};
-    const offers=[...currentOffers].sort((a,b)=>{
-      const av=sortValue(a,sortKey,data),bv=sortValue(b,sortKey,data);
-      if(typeof av==='number'&&typeof bv==='number'){
-        if(Number.isNaN(av)&&Number.isNaN(bv))return 0;
-        if(Number.isNaN(av))return 1;
-        if(Number.isNaN(bv))return -1;
-        return(av-bv)*sortDir;
-      }
-      return String(av).localeCompare(String(bv),'pl',{numeric:true,sensitivity:'base'})*sortDir;
-    });
-    const arrows={type:'Typ',location:'Lokalizacja / adres',source:'Źródło',price:'Cena',area:'Powierzchnia',priceM2:'Cena/m²'};
-    const th=k=>'<th class="'+(sortKey===k?(sortDir===1?'sort-asc':'sort-desc'):'')+'" onclick="sortOffers(\''+k+'\')">'+arrows[k]+'<span class="arrow">'+(sortKey===k?(sortDir===1?'▲':'▼'):'↕')+'</span></th>';
-    $('offerCount').textContent=offers.length+' ofert';
-    $('offers').innerHTML='<div class="offers-wrap"><table class="offers"><thead><tr><th>LP</th>'+th('type')+th('location')+th('source')+'<th>URL</th>'+th('price')+th('area')+th('priceM2')+'</tr></thead><tbody>'+offers.map((o,i)=>{const loc=[o.locality,o.street].filter(Boolean).join(', ')||o.location||'—';return '<tr><td>'+(i+1)+'</td><td>'+esc(o.type||data.propertyType||'')+'</td><td>'+esc(loc)+'</td><td>'+esc(o.source||o.portal||'—')+'</td><td><a href="'+esc(o.url||'#')+'" target="_blank" rel="noopener">Otwórz</a></td><td class="price">'+fmtMoney(o.price)+'</td><td>'+fmtNum(o.area)+' m²</td><td class="pm2">'+fmtM2(o.priceM2)+'</td></tr>';}).join('')+'</tbody></table></div>';
+    const data=window.lastData||{};const offers=[...currentOffers].sort((a,b)=>{const av=sortValue(a,sortKey,data),bv=sortValue(b,sortKey,data);if(typeof av==='number'&&typeof bv==='number'){if(Number.isNaN(av)&&Number.isNaN(bv))return 0;if(Number.isNaN(av))return 1;if(Number.isNaN(bv))return -1;return(av-bv)*sortDir}return String(av).localeCompare(String(bv),'pl',{numeric:true,sensitivity:'base'})*sortDir});
+    const arrows={type:'Typ',location:'Lokalizacja / adres',source:'Źródło',price:'Cena',area:'Powierzchnia',priceM2:'Cena/m²'};const th=k=>'<th class="'+(sortKey===k?(sortDir===1?'sort-asc':'sort-desc'):'')+'" onclick="sortOffers(\''+k+'\')">'+arrows[k]+'<span class="arrow">'+(sortKey===k?(sortDir===1?'▲':'▼'):'↕')+'</span></th>';
+    $('offerCount').textContent=offers.length+' ofert';$('offers').innerHTML='<div class="offers-wrap"><table class="offers"><thead><tr><th>LP</th>'+th('type')+th('location')+th('source')+'<th>URL</th>'+th('price')+th('area')+th('priceM2')+'</tr></thead><tbody>'+offers.map((o,i)=>{const loc=[o.locality,o.street].filter(Boolean).join(', ')||o.location||'—';return '<tr><td>'+(i+1)+'</td><td>'+esc(o.type||data.propertyType||'')+'</td><td>'+esc(loc)+'</td><td>'+esc(o.source||o.portal||'—')+'</td><td><a href="'+esc(o.url||'#')+'" target="_blank" rel="noopener">Otwórz</a></td><td class="price">'+fmtMoney(o.price)+'</td><td>'+fmtNum(o.area)+' m²</td><td class="pm2">'+fmtM2(o.priceM2)+'</td></tr>'}).join('')+'</tbody></table></div>';
   };
   window.render=function(data){
-    window.lastData=data;
-    $('results').classList.remove('hidden');
-    $('message').classList.add('hidden');
-    const sources=Array.isArray(data.sources)?data.sources:[];
-    currentOffers=Array.isArray(data.offers)?data.offers:[];
-    const plots=isPlots();
-    const sum=field=>sources.reduce((a,s)=>a+Number(s[field]||0),0);
-    const filtered=plots?Number(data.beforeCrossDedup||currentOffers.length):sum('filtered');
-    const duplicates=plots?Number(data.duplicatesRemoved||0):sum('internalDuplicatesRemoved');
-    const accepted=plots?Number(data.unique||currentOffers.length):sources.reduce((a,s)=>a+Number(s.acceptedAfterDedup??Math.max(0,Number(s.filtered||0)-Number(s.internalDuplicatesRemoved||0))),0);
-    $('filtered').textContent=fmtNum(filtered);
-    $('duplicates').textContent=fmtNum(duplicates);
-    $('accepted').textContent=fmtNum(accepted);
-    const areas=currentOffers.map(o=>Number(o.area)).filter(Number.isFinite);
-    $('range').innerHTML=areas.length?'Zakres powierzchni: <strong>'+fmtNum(Math.min(...areas))+' m² – '+fmtNum(Math.max(...areas))+' m²</strong>':'Brak ofert w wyniku.';
-    $('queryInfo').textContent=data.filterLabel?esc(data.location||'')+' · '+esc(data.propertyType||'')+' · '+esc(data.filterLabel)+' · promień '+fmtNum(data.radius)+' km':esc(data.location||'')+' · '+esc(data.propertyType||'')+' · promień '+fmtNum(data.radius)+' km';
-    $('sources').innerHTML=sources.map(s=>'<div class="source"><h3>'+esc(s.portal||s.source||'Źródło')+'</h3><div>ilość ofert po filtrze: <b>'+fmtNum(s.filtered??0)+'</b></div><div>usunięte duplikaty: <b>'+fmtNum(s.internalDuplicatesRemoved||0)+'</b></div><div>przyjęto: <b>'+fmtNum(s.acceptedAfterDedup??Math.max(0,Number(s.filtered||0)-Number(s.internalDuplicatesRemoved||0)))+'</b></div></div>').join('');
-    const pill=document.querySelector('.section-title .pill');
-    if(pill)pill.textContent=sources.length+' źródeł danych';
-    sortKey=null;sortDir=1;window.renderOffers();
+    window.lastData=data;$('results').classList.remove('hidden');$('message').classList.add('hidden');const sources=Array.isArray(data.sources)?data.sources:[];currentOffers=Array.isArray(data.offers)?data.offers:[];const plots=isPlots();
+    const filtered=plots?Number(data.beforeCrossDedup||currentOffers.length):sources.reduce((a,s)=>a+Number(s.filtered||0),0);const duplicates=plots?Number(data.duplicatesRemoved||0):sources.reduce((a,s)=>a+Number(s.internalDuplicatesRemoved||0),0);const accepted=plots?Number(data.unique||currentOffers.length):sources.reduce((a,s)=>a+Number(s.acceptedAfterDedup||0),0);
+    $('filtered').textContent=fmtNum(filtered);$('duplicates').textContent=fmtNum(duplicates);$('accepted').textContent=fmtNum(accepted);const areas=currentOffers.map(o=>Number(o.area)).filter(Number.isFinite);$('range').innerHTML=areas.length?'Zakres powierzchni: <strong>'+fmtNum(Math.min(...areas))+' m² – '+fmtNum(Math.max(...areas))+' m²</strong>':'Brak ofert w wyniku.';$('queryInfo').textContent=data.filterLabel?esc(data.location||'')+' · '+esc(data.propertyType||'')+' · '+esc(data.filterLabel)+' · promień '+fmtNum(data.radius)+' km':esc(data.location||'')+' · '+esc(data.propertyType||'')+' · promień '+fmtNum(data.radius)+' km';
+    let sourceStats=sources;
+    if(plots){
+      const stats={};sources.forEach(s=>{const n=s.portal||s.source||'Źródło';stats[n]={filtered:Number(s.filtered||0),internal:0,external:0,accepted:0}});const sourceName=o=>String(o?.portal||o?.source||'').trim()||'Źródło';
+      (Array.isArray(data.duplicates)?data.duplicates:[]).forEach(d=>{const dup=sourceName(d.duplicate),kept=sourceName(d.kept);if(!stats[dup])stats[dup]={filtered:0,internal:0,external:0,accepted:0};if(dup===kept)stats[dup].internal++;else stats[dup].external++});
+      sources.forEach(s=>{const n=s.portal||s.source||'Źródło';const x=stats[n]||{filtered:Number(s.filtered||0),internal:0,external:0,accepted:0};x.accepted=Math.max(0,x.filtered-x.internal-x.external);stats[n]=x});
+      sourceStats=sources.map(s=>{const n=s.portal||s.source||'Źródło',x=stats[n];return {...s,filtered:x.filtered,internalDuplicatesRemoved:x.internal,externalDuplicatesRemoved:x.external,duplicatesRemoved:x.internal+x.external,acceptedAfterDedup:x.accepted}})
+    }
+    $('sources').innerHTML=sourceStats.map(s=>'<div class="source"><h3>'+esc(s.portal||s.source||'Źródło')+'</h3><div>ilość ofert po filtrze: <b>'+fmtNum(s.filtered??0)+'</b></div><div>duplikaty wewnętrzne: <b>'+fmtNum(s.internalDuplicatesRemoved||0)+'</b></div><div>duplikaty zewnętrzne: <b>'+fmtNum(s.externalDuplicatesRemoved||0)+'</b></div><div>usunięte duplikaty łącznie: <b>'+fmtNum(s.duplicatesRemoved??Number(s.internalDuplicatesRemoved||0)+Number(s.externalDuplicatesRemoved||0))+'</b></div><div>przyjęto: <b>'+fmtNum(s.acceptedAfterDedup??Math.max(0,Number(s.filtered||0)-Number(s.duplicatesRemoved||0)))+'</b></div></div>').join('');
+    const pill=document.querySelector('.section-title .pill');if(pill)pill.textContent=sources.length+' źródeł danych';sortKey=null;sortDir=1;window.renderOffers();
   };
 })();
 </script>
