@@ -1,0 +1,57 @@
+<style>
+.export-bar{display:flex;justify-content:flex-end;align-items:center;margin-top:12px;gap:10px}.export-btn{height:40px;background:var(--accent);color:#06201c;border:0;border-radius:8px;padding:0 16px;font-weight:700;cursor:pointer}.export-btn:disabled{opacity:.45;cursor:not-allowed}
+</style>
+<script>
+(function(){
+  function ensureExportButton(){
+    const card=document.getElementById('selectedOffersCard');
+    const content=document.getElementById('selectedOffersContent');
+    if(!card||!content)return;
+    let bar=document.getElementById('excelExportBar');
+    if(!bar){bar=document.createElement('div');bar.id='excelExportBar';bar.className='export-bar';content.appendChild(bar)}
+    let btn=document.getElementById('excelExportBtn');
+    if(!btn){btn=document.createElement('button');btn.id='excelExportBtn';btn.className='export-btn';btn.type='button';btn.textContent='EKSPORT DO EXCELA';bar.appendChild(btn);btn.addEventListener('click',exportSelectedToExcel)}
+    btn.disabled=typeof XLSX==='undefined'||selectedOffersForExport().length===0;
+  }
+  function selectedOffersForExport(){
+    const card=document.getElementById('selectedOffersCard');
+    if(!card||typeof currentOffers==='undefined')return[];
+    return currentOffers.filter(o=>card.querySelector('[data-selected-key="'+cssEscape(String(o?.url||'')+'|'+String(o?.price??'')+'|'+String(o?.area??''))+"]')));
+  }
+  function cssEscape(s){return s.replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\n/g,'\\A ')}
+  function exportSelectedToExcel(){
+    if(typeof XLSX==='undefined'){alert('Biblioteka eksportu Excel nie jest jeszcze dostępna.');return}
+    const rows=selectedOffersForExport();
+    if(!rows.length){alert('Nie wybrano żadnej oferty do eksportu.');return}
+    const data=rows.map((o,i)=>({
+      'LP':i+1,
+      'Typ':o.type||window.lastData?.propertyType||'',
+      'Adres':[o.locality,o.street].filter(Boolean).join(', ')||o.location||'',
+      'Źródło':o.source||o.portal||'',
+      'URL':o.url||'',
+      'Cena':Number.isFinite(Number(o.price))?Number(o.price):null,
+      'Powierzchnia (m²)':Number.isFinite(Number(o.area))?Number(o.area):null,
+      'Cena/m²':Number.isFinite(Number(o.priceM2))?Number(o.priceM2):null
+    }));
+    const ws=XLSX.utils.json_to_sheet(data);
+    ws['!cols']=[{wch:7},{wch:24},{wch:42},{wch:18},{wch:80},{wch:16},{wch:20},{wch:16}];
+    const range=XLSX.utils.decode_range(ws['!ref']);
+    for(let r=1;r<=range.e.r;r++){
+      if(ws[XLSX.utils.encode_cell({r,c:5})])ws[XLSX.utils.encode_cell({r,c:5})].z='#,##0.00';
+      if(ws[XLSX.utils.encode_cell({r,c:6})])ws[XLSX.utils.encode_cell({r,c:6})].z='0.00';
+      if(ws[XLSX.utils.encode_cell({r,c:7})])ws[XLSX.utils.encode_cell({r,c:7})].z='#,##0.00';
+    }
+    ws['!autofilter']={ref:ws['!ref']};
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Wybrane oferty');
+    const location=String(window.lastData?.location||'analiza').trim().replace(/[^\p{L}\p{N}_-]+/gu,'_').slice(0,40)||'analiza';
+    const stamp=new Date().toISOString().slice(0,10);
+    XLSX.writeFile(wb,'wybrane_oferty_'+location+'_'+stamp+'.xlsx');
+  }
+  const oldRenderSelected=window.renderSelected;
+  window.renderSelected=function(){if(typeof oldRenderSelected==='function')oldRenderSelected();setTimeout(ensureExportButton,0)};
+  const oldRender=window.render;
+  window.render=function(data){if(typeof oldRender==='function')oldRender(data);setTimeout(ensureExportButton,0)};
+  window.addEventListener('load',()=>setTimeout(ensureExportButton,100));
+})();
+</script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
